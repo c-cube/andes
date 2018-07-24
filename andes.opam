@@ -1,0 +1,27 @@
+opam-version: "2.0"
+name: "andes"
+license: "MIT"
+version: "dev"
+author: "Simon Cruanes"
+maintainer: ["simon.cruanes.2007@m4x.org"]
+build: [
+  ["dune" "build" "-p" name]
+]
+build-doc: [
+  ["dune" "build" "@doc" "-p" name]
+]
+build-test: [
+  ["dune" "runtest"]
+]
+depends: [
+  "dune" {build}
+  "menhir"
+  "containers"
+  "sequence"
+  "ocaml" { >= "4.02" }
+]
+tags: [ "prolog" "datalog" "logic" "tabling" ]
+homepage: "https://github.com/c-cube/andes"
+dev-repo: "git+https://github.com/c-cube/andes.git"
+bug-reports: "https://github.com/c-cube/andes/issues/"
+

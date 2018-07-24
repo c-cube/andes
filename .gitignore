@@ -1,0 +1,9 @@
+_build/
+*.annot
+*.native
+*.log
+*.status
+.*.swp
+.session
+*.docdir
+.merlin
