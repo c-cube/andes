@@ -58,8 +58,6 @@ module Var = struct
   let[@inline] mark v = v.v_marked <- true
   let[@inline] unmark v = v.v_marked <- false
 
-  let dummy = fresh()
-
   module Map = CCMap.Make(struct type nonrec t = t let compare = compare end)
   module Set = CCSet.Make(struct type nonrec t = t let compare = compare end)
 end
@@ -84,9 +82,9 @@ module Fun = struct
 end
 
 module Renaming = struct
-  type t = Var.t Vec.t
+  type t = Var.t Vec.vector
 
-  let create () = Vec.make_empty Var.dummy
+  let create () = Vec.create ()
 
   let finish (st:t) = Vec.iter (fun v -> Var.unmark v; v.v_binding <- None) st
 
@@ -168,8 +166,6 @@ module Term = struct
   let eqn ~sign lhs rhs = mk_ @@ Eqn {lhs; rhs; sign}
   let eq a b : t = eqn ~sign:true a b
   let neq a b : t = eqn ~sign:false a b
-
-  let dummy = var Var.dummy
 
   let is_var t = match view t with Var _ -> true | _ -> false
 
@@ -258,11 +254,11 @@ module Undo_stack : sig
 
   val with_ : ?undo:t -> (t -> 'a) -> 'a
 end = struct
-  type t = Var.t Vec.t
+  type t = Var.t Vec.vector
 
   type level = int
 
-  let create () : t = Vec.make_empty Var.dummy
+  let create () : t = Vec.create ()
 
   let[@inline] save (st:t) : level = Vec.size st
 
@@ -274,7 +270,7 @@ end = struct
 
   let restore st lvl : unit =
     while Vec.size st > lvl do
-      let v = Vec.pop_last st in
+      let v = Vec.pop_exn st in
       v.v_binding <- None;
     done
 

@@ -11,8 +11,6 @@ module Var : sig
   val hash : t -> int
   val pp : t CCFormat.printer
 
-  val dummy : t
-
   module Map : CCMap.S with type key = t
   module Set : CCSet.S with type elt = t
 end
@@ -86,8 +84,6 @@ module Term : sig
 
   val rename : Renaming.t -> t -> t
   val rename_arr : Renaming.t -> t IArray.t -> t IArray.t
-
-  val dummy : t
 end
 
 module Rule : sig

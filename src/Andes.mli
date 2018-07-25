@@ -11,10 +11,14 @@ module Log : sig
   val enable : int -> unit
 end
 
-type solution = {
-  sol_subst: Term.t Var.Map.t;
-  sol_constr: Term.t list; (* constraints *)
-}
+module Solution : sig
+  type t = {
+    subst: Term.t Var.Map.t;
+    constr: Term.t list; (* constraints *)
+  }
+
+  val pp : t CCFormat.printer
+end
 
 type goal = Term.t list
 
@@ -27,5 +31,5 @@ module Config : sig
   val pp : t CCFormat.printer
 end
 
-val solve : ?config:Config.t -> goal -> solution option
+val solve : ?config:Config.t -> goal -> Solution.t option
 (** [solve goal] returns the first solution to the given goal *)

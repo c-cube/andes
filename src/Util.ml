@@ -1,5 +1,6 @@
 
 module Fmt = CCFormat
+module Vec = CCVector
 
 let pp_iarray pp_x out a =
   CCFormat.(seq ~sep:(return "@ ") @@ pp_x) out (IArray.to_seq a)
