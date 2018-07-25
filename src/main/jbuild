@@ -1,0 +1,8 @@
+
+(executable
+  ((name main)
+   (public_name andes)
+   (modes (native))
+   (package andes)
+   (libraries (andes andes.tip))
+  ))

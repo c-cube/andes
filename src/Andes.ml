@@ -6,8 +6,10 @@ open Types
 
 module ID = ID
 module Term = Term
-module Fun = Fun
 module Var = Var
+module Fun = Fun
+module Rule = Types.Rule
+module Types = Types
 module Log = Util.Log
 
 module Solution = struct
@@ -47,8 +49,6 @@ module Clause = struct
       else Fmt.fprintf out "@ %a" (pp_iarray Term.pp) g
     in
     Fmt.fprintf out "(@[%a%a@])" (pp_iarray Term.pp) c.concl pp_guard c.guard
-
-  let dummy : t = make IArray.empty IArray.empty
 end
 
 module Config = struct
@@ -351,3 +351,8 @@ let solve ?config (g:goal) : Solution.t option =
   Solver.next_solution s
 
 
+(**/**)
+module Fmt = CCFormat
+module Util = Util
+module IArray = IArray
+(**/**)

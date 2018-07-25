@@ -3,6 +3,7 @@ module Var : sig
   type t
 
   val make : string -> t
+  val makef : ('a, Format.formatter, unit, unit, unit, t) format6 -> 'a
   val copy : t -> t
   val fresh : unit -> t
 
@@ -31,9 +32,14 @@ module Fun : sig
   val hash : t -> int
   val pp : t CCFormat.printer
 
+  val id : t -> ID.t
   val kind : t -> kind
+  val arity : t -> int
+
+  type rule_promise
+
   val mk_cstor : ID.t -> arity:int -> t
-  val mk_defined : ID.t -> arity:int -> t
+  val mk_defined : ID.t -> arity:int -> t * rule_promise
 end
 
 (** {2 Variable renaming} *)
@@ -97,6 +103,13 @@ module Rule : sig
   val concl: t -> Term.t
   val body : t -> Term.t IArray.t
 
+  val make : Term.t -> Term.t list -> t
+  (** [make concl body] makes a rule.
+      @raise Util.Error if the conclusion is not a defined function application *)
+
+  val add_to_def : Fun.rule_promise -> t list -> unit
+  (** Define the set of rules for this function *)
+
   val rename_in_place : t -> unit
   (** rename variables of this rule *)
 
@@ -114,12 +127,13 @@ module Undo_stack : sig
   val clear : t -> unit
   (** clear for re-using *)
 
+  val push_bind : t -> Var.t -> Term.t -> unit
+
   val with_ : ?undo:t -> (t -> 'a) -> 'a
   (** [with_ f] saves the current state of the undo stack,
       calls [f undo], then restores variables to the old saved state.
       @param undo if provided, start from this undo stack *)
 end
-
 
 (** {2 Unification of terms} *)
 module Unif : sig

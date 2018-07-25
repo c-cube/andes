@@ -46,13 +46,20 @@ module Var = struct
   type t = var
 
   let[@inline] make s : t = {v_id=ID.make s; v_binding=None; v_marked=false;}
+  let makef fmt = Fmt.ksprintf ~f:make fmt
   let[@inline] copy {v_id;_} : t = {v_id=ID.copy v_id; v_binding=None; v_marked=false}
-  let fresh () = make "_"
+
+  let fresh =
+    let vars = "xyzuvw" in
+    let n = ref 0 in
+    fun () -> incr n;
+      let d, q = !n mod (String.length vars), !n / String.length vars in
+      makef "%c%s" vars.[d] (if q=0 then "" else string_of_int q)
 
   let[@inline] equal a b = ID.equal a.v_id b.v_id
   let[@inline] compare a b = ID.compare a.v_id b.v_id
   let[@inline] hash a = ID.hash a.v_id
-  let pp out v = ID.pp out v.v_id
+  let pp out v = Fmt.fprintf out "?%a" ID.pp v.v_id
 
   let[@inline] marked v = v.v_marked
   let[@inline] mark v = v.v_marked <- true
@@ -71,10 +78,20 @@ module Fun = struct
         mutable rules: rule list;
       }
 
-  let mk_cstor id ~arity : t = {f_id=id; f_arity=arity; f_kind=F_cstor}
-  let mk_defined id ~arity : t = {f_id=id; f_arity=arity; f_kind=F_defined {rules=[]}}
+  type rule_promise = t
 
+  let is_defined f = match f.f_kind with F_defined _ -> true | _ -> false
+
+  let mk_cstor id ~arity : t = {f_id=id; f_arity=arity; f_kind=F_cstor}
+  let mk_defined id ~arity : t * rule_promise =
+    let f_kind = F_defined {rules=[]} in
+    let f = {f_id=id; f_arity=arity; f_kind} in
+    f, f
+
+  let[@inline] id f = f.f_id
   let[@inline] kind f = f.f_kind
+  let[@inline] arity f = f.f_arity
+
   let[@inline] equal a b = ID.equal a.f_id b.f_id
   let[@inline] compare a b = ID.compare a.f_id b.f_id
   let[@inline] hash a = ID.hash a.f_id
@@ -84,9 +101,10 @@ end
 module Renaming = struct
   type t = Var.t Vec.vector
 
-  let create () = Vec.create ()
+  let[@inline] create () = Vec.create ()
 
-  let finish (st:t) = Vec.iter (fun v -> Var.unmark v; v.v_binding <- None) st
+  let finish (st:t) =
+    Vec.iter (fun v -> Var.unmark v; v.v_binding <- None) st
 
   let with_ f =
     let r = create() in
@@ -231,6 +249,14 @@ module Rule = struct
   let equal a b : bool =
     Term.equal (concl a) (concl b) && IArray.equal Term.equal (body a) (body b)
 
+  let make concl body : t =
+    begin match Term.view concl with
+      | Term.App {f; _} when Fun.is_defined f ->  ()
+      | _ ->
+        Util.errorf "rule cannot have head %a,@ expect defined function" Term.pp concl
+    end;
+    { rule_concl=concl; rule_body=IArray.of_list body }
+
   let rename_in_place r : unit =
     Renaming.with_
       (fun ren ->
@@ -239,6 +265,22 @@ module Rule = struct
 
   let pp out (r:t) =
     Format.fprintf out "(@[%a <- %a@])" Term.pp (concl r) (pp_iarray Term.pp) (body r)
+
+  let add_to_def (add:Fun.rule_promise) (l:t list) =
+    match Fun.kind add with
+    | Fun.F_defined def ->
+      assert (def.rules = []);
+      (* is there a rule that doesn't have [add] as head symbol? *)
+      let bad_r =
+        CCList.find_pred (fun r -> match Term.view r.rule_concl with App {f; _} -> not @@ Fun.equal f add | _ -> true) l
+      in
+      begin match bad_r with
+        | None ->  ()
+        | Some r -> Util.errorf "rule %a@ cannot be added to %a" pp r Fun.pp add
+      end;
+      List.iter rename_in_place l;
+      def.rules <- l
+    | _ -> assert false
 end
 
 module Undo_stack : sig

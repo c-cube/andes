@@ -15,10 +15,12 @@ build-test: [
 ]
 depends: [
   "dune" {build}
-  "menhir"
   "containers"
   "sequence"
   "ocaml" { >= "4.02" }
+]
+depopts: [
+  "tip-parser" { >= "0.3" }
 ]
 tags: [ "prolog" "datalog" "logic" "tabling" ]
 homepage: "https://github.com/c-cube/andes"

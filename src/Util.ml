@@ -3,7 +3,21 @@ module Fmt = CCFormat
 module Vec = CCVector
 
 let pp_iarray pp_x out a =
-  CCFormat.(seq ~sep:(return "@ ") @@ pp_x) out (IArray.to_seq a)
+  Fmt.(seq ~sep:(return "@ ") @@ pp_x) out (IArray.to_seq a)
+
+let pp_list pp_x out l =
+  Fmt.list ~sep:(Fmt.return "@ ") pp_x out l
+
+exception Error of string
+
+let () =
+  Printexc.register_printer
+    (function
+      | Error msg -> Some (Fmt.sprintf "@{<Red>Error@}: %s" msg)
+      | _ -> None)
+
+let errorf fmt =
+  Fmt.ksprintf ~f:(fun s -> raise (Error s)) fmt
 
 module Log : sig
   val enable : int -> unit

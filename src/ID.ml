@@ -18,7 +18,8 @@ let makef fmt = CCFormat.ksprintf ~f:make fmt
 let copy {name;_} = make name
 
 let id {id;_} = id
-let to_string id = id.name
+let name id = id.name
+let to_string = name
 
 let equal a b = a.id=b.id
 let compare a b = CCInt.compare a.id b.id

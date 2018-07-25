@@ -3,12 +3,16 @@
 
 (** Unique Identifiers *)
 module ID = ID
-
 module Term = Types.Term
 module Var = Types.Var
+module Fun = Types.Fun
+module Rule = Types.Rule
+module Types = Types
 
 module Log : sig
   val enable : int -> unit
+  val logf : int -> ((('a, Format.formatter, unit, unit) format4 -> 'a) -> unit) -> unit
+  val log : int -> string -> unit
 end
 
 module Solution : sig
@@ -33,3 +37,9 @@ end
 
 val solve : ?config:Config.t -> goal -> Solution.t option
 (** [solve goal] returns the first solution to the given goal *)
+
+(**/**)
+module Fmt = CCFormat
+module Util = Util
+module IArray = IArray
+(**/**)
