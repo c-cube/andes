@@ -6,6 +6,23 @@ open Andes
 module Term = Andes.Term
 module A = Ast
 
+(* generator of fresh IDs *)
+module Gensym : sig
+  type t
+  val create : unit -> t
+  val fresh_var : t -> Var.t
+end = struct
+  type t = int ref
+  let create () = ref 0
+  let fresh_s =
+    let vars = "xyzuvw" in
+    fun n ->
+      let x = CCRef.get_then_incr n in
+      let d, q = x mod (String.length vars), x / String.length vars in
+      Printf.sprintf "_%c%s" vars.[d] (if q=0 then "" else string_of_int q)
+  let fresh_var r = Var.make (fresh_s r)
+end
+
 type builtins = {
   true_: Fun.t;
   false_: Fun.t;
@@ -19,6 +36,7 @@ type builtins = {
 type t = {
   funs : Fun.t ID.Tbl.t;
   builtins: builtins;
+  gensym: Gensym.t;
   mutable goal : Term.t list;
   mutable n: int;
 }
@@ -78,6 +96,7 @@ let mk_builtins () : builtins =
 let create() : t =
   let st = {
     funs=ID.Tbl.create 16;
+    gensym=Gensym.create();
     builtins=mk_builtins ();
     goal=[];
     n=0;
@@ -87,23 +106,6 @@ let create() : t =
 let[@inline] goal st : Term.t list = st.goal
 
 let unimplemented s = Util.errorf "not implemented: compile %s" s
-
-(* generator of fresh IDs *)
-module Gensym : sig
-  type t
-  val create : unit -> t
-  val fresh_var : t -> Var.t
-end = struct
-  type t = int ref
-  let create () = ref 0
-  let fresh_s =
-    let vars = "xyzuvw" in
-    fun n ->
-      let x = CCRef.get_then_incr n in
-      let d, q = x mod (String.length vars), x / String.length vars in
-      Printf.sprintf "%c%s" vars.[d] (if q=0 then "" else string_of_int q)
-  let fresh_var r = Var.make (fresh_s r)
-end
 
 (** {2 Functional Substitutions}
     Mostly useful for preprocessing *)
@@ -151,7 +153,6 @@ module M = Monad_choice.Make(M_state)
 *)
 let compile_fun ?res_eq (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.t list =
   let open M.Infix in
-  let g = Gensym.create() in
   (* map [A.var] to [Var.t] *)
   let get_a_var =
     let var_tbl : Var.t ID.Tbl.t = ID.Tbl.create 6 in
@@ -204,14 +205,14 @@ let compile_fun ?res_eq (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.
     | A.Not u ->
       (* add [not u res], return [res] *)
       aux subst u >>= fun u ->
-      let res = Term.var @@ Gensym.fresh_var g in
+      let res = Term.var @@ Gensym.fresh_var st.gensym in
       M.update (M_state.add_guard @@ Term.app_l st.builtins.not_ [u; res]) >|= fun () ->
       res
     | A.Binop (op, a, b) ->
       (* [not u x], return x *)
       aux subst a >>= fun a ->
       aux subst b >>= fun b ->
-      let res = Term.var @@ Gensym.fresh_var g in
+      let res = Term.var @@ Gensym.fresh_var st.gensym in
       let f = match op with
         | A.And -> st.builtins.and_
         | A.Or -> st.builtins.or_
@@ -243,7 +244,7 @@ let compile_fun ?res_eq (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.
       | Fun.F_defined _ ->
         (* introduce a variable [res] for the result of [f args],
            push [f args…res] into guard, return [res] *)
-        let res = Term.var @@ Gensym.fresh_var g in
+        let res = Term.var @@ Gensym.fresh_var st.gensym in
         M.map_l (aux subst) args >>= fun args ->
         M.update (M_state.add_guard (Term.app_l f (args @ [res]))) >|= fun () ->
         res
