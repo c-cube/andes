@@ -73,7 +73,6 @@ end = struct
 
   and tbl_entry = {
     e_goal: Term.t IArray.t;
-    e_tree: tree Vec.vector;
     e_solutions: Clause.t Vec.vector;
     e_listeners: tree Vec.vector;
   }
@@ -222,7 +221,6 @@ end = struct
            | None -> ()
            | Some tree' ->
              Log.logf 5 (fun k->k "(@[resolution-yields@ %a@])" Clause.pp tree'.t_clause);
-             Vec.push tree.t_entry.e_tree tree';
              Queue.push tree' st.tasks;
         )
         rules
@@ -287,7 +285,6 @@ end = struct
     let c = Clause.make g g in
     let entry = {
       e_goal=g;
-      e_tree=Vec.create();
       e_solutions=Vec.create();
       e_listeners=Vec.create();
     } in
@@ -299,7 +296,6 @@ end = struct
       | None -> ()
       | Some tree ->
         (* need to process this new [tree] *)
-        Vec.push entry.e_tree tree;
         Queue.push tree s.tasks;
     end;
     s
