@@ -105,6 +105,7 @@ module Clause : sig
   val guard : t -> Term.t IArray.t
 
   val deref_deep : t -> t
+  val rename : t -> t
 
   val equal : t -> t -> bool
   val make : Term.t IArray.t -> Term.t IArray.t -> t

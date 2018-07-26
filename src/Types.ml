@@ -261,6 +261,9 @@ module Clause = struct
      guard=IArray.map f c.guard;
     }
 
+  let rename c =
+    Renaming.with_ (fun ren -> map (Term.rename ren) c)
+
   let deref_deep c = map Term.deref_deep c
 
   let[@inline] equal a b : bool =
