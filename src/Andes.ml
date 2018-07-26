@@ -21,8 +21,8 @@ module Solution = struct
   }
 
   let pp out s =
-    Fmt.fprintf out "(@[solution@ :subst %a@ :constraint %a@])"
-      (Fmt.seq ~sep:(Fmt.return "@ ") @@ Fmt.hbox @@ Fmt.Dump.pair Var.pp Term.pp)
+    Fmt.fprintf out "(@[solution@ :subst {@[%a@]}@ :constraint %a@])"
+      Fmt.(seq ~sep:(return "@ ") @@ within "(" ")" @@ hbox @@ pair ~sep:(return "@ := ") Var.pp Term.pp)
       (Var.Map.to_seq s.subst)
       (Fmt.Dump.list Term.pp) s.constr
 end
@@ -51,6 +51,7 @@ end = struct
   type tree_kind = Tree_dead | Tree_root | Tree_open
 
   type tree = {
+    t_id: int; (* unique id *)
     t_clause: Clause.t;
     mutable t_label: label;
     mutable t_kind: tree_kind;
@@ -80,6 +81,19 @@ end = struct
   (* if true, can be dropped from listeners *)
   let[@inline] tree_is_dead (t:tree) = t.t_kind = Tree_dead
 
+  let pp_tree out (t:tree) =
+    let pp_label out = function
+      | L_none -> Fmt.string out ":no-label"
+      | L_solution -> Fmt.string out ":solution"
+      | L_defer {entry;offset;_} ->
+        Fmt.fprintf out "@[<2>:defer[%d] (@[goal %a@])@]"
+          offset (Util.pp_iarray Term.pp) entry.e_goal
+      | L_program { term; _ } ->
+        Fmt.fprintf out ":program %a" Term.pp term
+    in
+    Fmt.fprintf out "(@[tree[%d]@ :label %a@ :clause %a@])"
+      t.t_id pp_label t.t_label Clause.pp t.t_clause
+
   (* TODO: indexing for same-length matching (feature vector?) *)
   type t = {
     tbl: tbl_entry Vec.vector;
@@ -92,36 +106,63 @@ end = struct
   let[@inline] has_task s = not @@ Queue.is_empty s.tasks
   let[@inline] next_task s = Queue.pop s.tasks
 
-  let mk_tree ?(kind=Tree_open) (e:tbl_entry) (c:Clause.t) : tree option =
-    match Simplify.simplify_c c with
-    | None -> None
-    | Some c -> Some { t_clause=c; t_label=L_none; t_kind=kind; t_entry=e }
+  let mk_tree =
+    let n = ref 0 in
+    fun ?(kind=Tree_open) (e:tbl_entry) (c:Clause.t) : tree option ->
+      match Simplify.simplify_c c with
+      | None -> None
+      | Some c ->
+        incr n;
+        Some { t_id= !n; t_clause=c; t_label=L_none; t_kind=kind; t_entry=e }
 
   (* TODO: support abstraction function for entries:
      - need to see if abstraction exists already (just use it instead then)
      - otherwise proceed as usual, but handle cases where solutions
-     do not actually unify with proper goal
+       do not actually unify with proper goal
   *)
 
-  (* this tree is either a solution, or dead. Mark it accordingly
-     and notify other entries *)
-  let tree_solution_or_dead (s:t) (t:tree) : unit =
+  (* is [c] a solution?
+     TODO: extend once we have constraints (i.e accept if the whole guard is
+     a conjunction of satisfiable constraints)
+  *)
+  let is_solution_c (c:Clause.t) : bool =
+    IArray.for_all
+      (fun t -> match Term.view t with
+         | Term.Eqn {sign=false; lhs; rhs} when not (Term.equal lhs rhs) -> true
+         | _ -> false)
+      (Clause.guard c)
+
+  (* this tree is either a solution, or dead, for no other rule applies to it.
+     Mark it accordingly and notify other entries if it's a solution *)
+  let tree_solution_or_dead (st:t) (t:tree) : unit =
     assert (t.t_label = L_none);
-    t.t_label <- L_solution
-  (* TODO: check if really a solution.
-     - if yes, add itself to entry.solutions, then notify listeners
-     - otherwise mark as dead *)
+    if t.t_kind = Tree_dead then ()
+    else if is_solution_c t.t_clause then (
+      Log.logf 5 (fun k->k "(@[tree.is_solution@ %a@])" pp_tree t);
+      (* add to solutions *)
+      t.t_label <- L_solution;
+      Vec.push t.t_entry.e_solutions t.t_clause;
+      (* notify listeners *)
+      Vec.iter
+        (fun t' -> Queue.push t' st.tasks)
+        t.t_entry.e_listeners
+    ) else (
+      t.t_kind <- Tree_dead;
+      (* XXX: actually correct? just drop the tree? *)
+      Util.errorf "tree %a@ should be dead or a solution"
+        pp_tree t
+    )
 
   (* Label a single tree. We assume that the clause is simplified already. *)
-  let process_tree (s:t) (t:tree) : unit =
-    assert (t.t_label = L_none);
-    let c = t.t_clause in
-    Log.logf 3 (fun k->k "(@[process_tree@ %a@])" Clause.pp c);
+  let process_tree (st:t) (tree:tree) : unit =
+    Log.logf 2 (fun k->k "(@[@{<yellow>process_tree@}@ %a@])" pp_tree tree);
+    assert (tree.t_label = L_none);
+    let c = tree.t_clause in
     let undo = Undo_stack.create() in
     (* find if some other entry subsumes part of the clause's guard?
        TODO: indexing to make this fast *)
     let find_existing () : (Term.t IArray.t * tbl_entry) option =
-      Vec.to_seq s.tbl
+      Vec.to_seq st.tbl
       |> Sequence.find_map
         (fun entry ->
            (* use [entry] iff it matches some lit of the clause's guard *)
@@ -139,27 +180,70 @@ end = struct
            ) else None)
     in
     (* find a member of the clause's guard that is eligible for resolution *)
-    let find_function () : Term.t option =
-      assert false (* TODO *)
+    let find_function () : _ option =
+      IArray.to_seq c.Clause.guard
+      |> Sequence.zip_i
+      |> Sequence.find_map
+        (fun (i,t) -> match Term.view t with
+           | Term.App {f; _} ->
+             begin match Fun.kind f with
+               | F_defined{rules} when rules<>[] -> Some (i,f,rules,t)
+               | _ -> None
+             end
+           | _ -> None)
     in
-    match t.t_kind with
+    (* perform resolution *)
+    let do_resolution (i:int) f (rules:_ list) (t:Term.t) : unit =
+      Log.logf 4 (fun k->k "(@[@{<yellow>do_resolution@}@ :term %a@])" Term.pp t);
+      let guard =
+        let a = c.Clause.guard in
+        IArray.init (IArray.length a-1)
+          (fun j -> if j<i then IArray.get a j else IArray.get a (j+1))
+      in
+      tree.t_label <- L_program {term=t; fun_=f};
+      let undo = Undo_stack.create() in
+      List.iter
+        (fun r ->
+           Log.logf 5 (fun k->k "(@[do_resolution.step@ :rule %a@ :term %a@])" Rule.pp r Term.pp t);
+           Undo_stack.with_ ~undo
+             (fun undo ->
+                try
+                  Unif.unify ~undo t (Rule.concl r);
+                  let c' =
+                    Clause.make c.Clause.concl
+                      (IArray.append guard @@ Rule.body r)
+                    |> Clause.deref_deep
+                  in
+                  Log.logf 5 (fun k->k "(@[resolution-yields@ %a@])" Clause.pp c');
+                  match mk_tree ~kind:Tree_open tree.t_entry c' with
+                  | None -> ()
+                  | Some tree' ->
+                    Vec.push tree.t_entry.e_tree tree';
+                    Queue.push tree' st.tasks;
+                with Unif.Fail -> ())
+        )
+        rules
+    in
+    match tree.t_kind with
     | Tree_dead -> ()
     | Tree_open ->
       begin match find_existing () with
         | Some (subgoal, entry) ->
-          Vec.push entry.e_listeners t;
-          t.t_label <- L_defer {entry; goal=subgoal; offset=0;};
+          Log.logf 4 (fun k->k "(@[@{<yellow>defer-to@}@ %a@])" (pp_iarray Term.pp) entry.e_goal);
+          Vec.push entry.e_listeners tree;
+          tree.t_label <- L_defer {entry; goal=subgoal; offset=0;};
+          (* TODO: do resolution right now if entry has solutions *)
         | None ->
           begin match find_function () with
-            | None -> tree_solution_or_dead s t
-            | Some t -> assert false (* TODO: t should be expanded by resolution *)
+            | None -> tree_solution_or_dead st tree
+            | Some (i,f,rs,t) -> do_resolution i f rs t
           end
       end
     | Tree_root ->
       (* do not look for a node to defer to at the root *)
       begin match find_function () with
-        | None -> tree_solution_or_dead s t
-        | Some t -> assert false (* TODO: t should be expanded by resolution *)
+        | None -> tree_solution_or_dead st tree
+        | Some (i,f,rs,t) -> do_resolution i f rs t
       end
 
   (* process tasks until we find a new solution *)

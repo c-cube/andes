@@ -36,6 +36,8 @@ module Fun : sig
   val kind : t -> kind
   val arity : t -> int
 
+  val is_defined : t -> bool
+
   type rule_promise
 
   val mk_cstor : ID.t -> arity:int -> t
@@ -101,6 +103,8 @@ module Clause : sig
 
   val concl : t -> Term.t IArray.t
   val guard : t -> Term.t IArray.t
+
+  val deref_deep : t -> t
 
   val equal : t -> t -> bool
   val make : Term.t IArray.t -> Term.t IArray.t -> t

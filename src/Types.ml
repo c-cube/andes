@@ -256,6 +256,13 @@ module Clause = struct
   let[@inline] concl c = c.concl
   let[@inline] guard c = c.guard
 
+  let map f c =
+    {concl=IArray.map f c.concl;
+     guard=IArray.map f c.guard;
+    }
+
+  let deref_deep c = map Term.deref_deep c
+
   let[@inline] equal a b : bool =
     IArray.equal Term.equal a.concl b.concl &&
     IArray.equal Term.equal a.guard b.guard
@@ -360,7 +367,7 @@ end = struct
 
   let clear st = restore st 0
 
-  let with_ ?(undo=create()) f =
+  let[@inline] with_ ?(undo=create()) f =
     let lvl = save undo in
     try
       let x = f undo in
