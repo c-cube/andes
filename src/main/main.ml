@@ -11,7 +11,7 @@ let solve stmts : unit =
     Format.printf "@{<Green>[@<1>✔]@} solution found!@ %a@." Andes.Solution.pp sol
 
 let process_file (file:string) =
-  Log.logf 1 (fun k->k "(@[{<yellow>process-file@} %S@])" file);
+  Log.logf 1 (fun k->k "(@[@{<yellow>process-file@} %S@])" file);
   match Andes_tip.parse_file file with
   | Error msg ->
     Format.printf "@{<Red>Error@} when parsing %S:@ %s@." file msg;
@@ -20,6 +20,7 @@ let process_file (file:string) =
     solve stmts
 
 let main () =
+  Fmt.set_color_default true;
   let files = CCVector.create () in
   let options = [
     "-d", Arg.Int Log.enable, " enable debug";

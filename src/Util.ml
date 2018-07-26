@@ -6,7 +6,7 @@ let pp_iarray pp_x out a =
   Fmt.(seq ~sep:(return "@ ") @@ pp_x) out (IArray.to_seq a)
 
 let pp_list pp_x out l =
-  Fmt.list ~sep:(Fmt.return "@ ") pp_x out l
+  Fmt.(list ~sep:(return "@ ") pp_x) out l
 
 exception Error of string
 
@@ -27,16 +27,13 @@ module Log : sig
 end = struct
   let lvl_ = ref 0
 
-  let enable l =
-    lvl_ := l;
-    if l > 0 then Fmt.set_color_default true;
-    ()
+  let enable l = lvl_ := l
 
   let logf lvl k =
     if lvl <= !lvl_ then (
       k (fun fmt ->
         let out = Format.std_formatter in
-        Format.fprintf out "@[<2>@{<Blue>[andes %d|%.3f]@}" lvl (Sys.time());
+        Format.fprintf out "@[<2>@{<Blue>[andes %d|%.3f]@}@ " lvl (Sys.time());
         Format.kfprintf
           (fun out -> Format.fprintf out "@]@.")
           out fmt)

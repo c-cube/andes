@@ -92,6 +92,21 @@ module Term : sig
   val rename_arr : Renaming.t -> t IArray.t -> t IArray.t
 end
 
+(** {2 Generalized Clause} *)
+module Clause : sig
+  type t = private {
+    concl: Term.t IArray.t; (* non empty *)
+    guard: Term.t IArray.t;
+  }
+
+  val concl : t -> Term.t IArray.t
+  val guard : t -> Term.t IArray.t
+
+  val equal : t -> t -> bool
+  val make : Term.t IArray.t -> Term.t IArray.t -> t
+  val pp : t CCFormat.printer
+end
+
 module Rule : sig
   type t = rule
   (** A rule, that is, a Horn clause where the LHS (concl) is
@@ -103,9 +118,13 @@ module Rule : sig
   val concl: t -> Term.t
   val body : t -> Term.t IArray.t
 
-  val make : Term.t -> Term.t list -> t
+  val make : Term.t -> Term.t IArray.t -> t
   (** [make concl body] makes a rule.
       @raise Util.Error if the conclusion is not a defined function application *)
+
+  val make_l : Term.t -> Term.t list -> t
+
+  val to_clause : t -> Clause.t
 
   val add_to_def : Fun.rule_promise -> t list -> unit
   (** Define the set of rules for this function *)

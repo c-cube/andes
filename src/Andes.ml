@@ -10,6 +10,8 @@ module Var = Var
 module Fun = Fun
 module Rule = Types.Rule
 module Types = Types
+module Simplify = Simplify
+
 module Log = Util.Log
 
 module Solution = struct
@@ -26,30 +28,6 @@ module Solution = struct
 end
 
 type goal = Term.t list
-
-(** {2 Generalized Clause} *)
-module Clause = struct
-  type t = {
-    concl: Term.t IArray.t; (* non empty *)
-    guard: Term.t IArray.t;
-  }
-
-  let[@inline] concl c = c.concl
-  let[@inline] guard c = c.guard
-
-  let[@inline] equal a b : bool =
-    IArray.equal Term.equal a.concl b.concl &&
-    IArray.equal Term.equal a.guard b.guard
-
-  let[@inline] make a b : t = {concl=a; guard=b}
-
-  let pp out (c:t) =
-    let pp_guard out g =
-      if IArray.is_empty g then ()
-      else Fmt.fprintf out "@ %a" (pp_iarray Term.pp) g
-    in
-    Fmt.fprintf out "(@[%a%a@])" (pp_iarray Term.pp) c.concl pp_guard c.guard
-end
 
 module Config = struct
   type t = {
@@ -114,114 +92,8 @@ end = struct
   let[@inline] has_task s = not @@ Queue.is_empty s.tasks
   let[@inline] next_task s = Queue.pop s.tasks
 
-  exception Several_rules
-  exception Simp_absurd
-
-  (* simplify the clause at this tree until either:
-     - the clause is found to be absurd (impossible guard)
-     - each term in the guard is maximally simplified and has several
-     rules that can potentially apply;
-     or, for constraints, the conjunction of constraints is SAT
-  *)
-  let simplify (c:Clause.t) : Clause.t option =
-    let undo = Undo_stack.create() in
-    let concl = ref c.Clause.concl in
-    let to_process = Vec.of_array (IArray.to_array_copy c.Clause.guard) in
-    let new_guard = Vec.create () in
-    (* after some variable has been bound, re-simplify
-       terms that can be simplified *)
-    let restart () : unit =
-      Log.log 5 "(simplify.restart)";
-      concl := IArray.map Term.deref_deep !concl;
-      Vec.filter'
-        (fun t ->
-           let t' = Term.deref_deep t in
-           if Term.equal t t' then true
-           else (
-             Vec.push to_process t';
-             false
-           ))
-        new_guard;
-    in
-    (* simplify given term, pushing it to [new_guard] if not simplifiable,
-       or pushing new terms to simplify to [to_process].
-       If term is absurd, raise Simp_absurd. *)
-    let simp_t (t:Term.t) : unit = match Term.view t with
-      | Term.Var _ -> assert false (* not at toplevel *)
-      | Term.Eqn {sign=true; lhs; rhs} when Term.is_var lhs || Term.is_var rhs ->
-        (* [x=t] replaces [x] with [t] everywhere, of fails by occur check.
-           if binding succeeds, need to re-simplify again *)
-        Undo_stack.with_ ~undo (fun undo ->
-          try
-            Unif.unify ~undo lhs rhs;
-            restart();
-          with Unif.Fail ->
-            raise_notrace Simp_absurd)
-      | Term.Eqn {sign=false; lhs; rhs} when Term.equal lhs rhs ->
-        raise_notrace Simp_absurd (* [t!=t] absurd *)
-      | Term.Eqn {sign=true; lhs; rhs} ->
-        (* check that [lhs] and [rhs] are unifiable, if yes keep them *)
-        Undo_stack.with_ ~undo (fun undo ->
-          try Unif.unify ~undo lhs rhs
-          with Unif.Fail -> raise_notrace Simp_absurd);
-        Vec.push new_guard t
-      | Term.Eqn _ -> Vec.push new_guard t
-      | Term.App {f; _} ->
-        begin match Fun.kind f with
-          | Fun.F_cstor -> Vec.push new_guard t
-          | Fun.F_defined {rules} ->
-            (* try to apply the rules, and simplify if zero or one apply *)
-            let n_success = ref 0 in
-            begin match
-                CCList.filter_map
-                  (fun r ->
-                     Undo_stack.with_ ~undo
-                       (fun undo ->
-                          try
-                            (* keep rule if its conclusion unifies with [t] *)
-                            Unif.unify ~undo (Rule.concl r) t;
-                            if !n_success > 0 then raise_notrace Several_rules;
-                            incr n_success;
-                            Some r
-                          with Unif.Fail -> None))
-                  rules
-              with
-              | [] -> raise Simp_absurd
-              | [rule] ->
-                Undo_stack.with_ ~undo (fun undo ->
-                  Unif.unify ~undo (Rule.concl rule) t;
-                  let rule_body = Rule.body rule |> IArray.map Term.deref_deep in
-                  IArray.iter (Vec.push to_process) rule_body;
-                  Rule.rename_in_place rule; (* consume rule's current version *)
-                  restart())
-              | exception Several_rules ->
-                (* several rules, keep *)
-                Vec.push new_guard t
-              | _::_::_ -> assert false
-            end
-        end
-    in
-    (* simplification fixpoint *)
-    try
-      while not @@ Vec.is_empty to_process do
-        let t = Vec.pop_exn to_process in
-        Log.logf 5 (fun k->k "(@[simplify.process@ %a@])" Term.pp t);
-        simp_t t
-      done;
-      let c' =
-        Clause.make !concl (Vec.to_array new_guard |> IArray.of_array_unsafe)
-      in
-      if not @@ Clause.equal c c' then (
-        Log.logf 3
-          (fun k->k "(@[simplify@ %a@ :into %a@])" Clause.pp c Clause.pp c');
-      );
-      Some c'
-    with Simp_absurd ->
-      Log.logf 3 (fun k->k "(@[simplify-absurd@ %a@])" Clause.pp c);
-      None
-
   let mk_tree ?(kind=Tree_open) (e:tbl_entry) (c:Clause.t) : tree option =
-    match simplify c with
+    match Simplify.simplify_c c with
     | None -> None
     | Some c -> Some { t_clause=c; t_label=L_none; t_kind=kind; t_entry=e }
 

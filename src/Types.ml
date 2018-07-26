@@ -99,12 +99,12 @@ module Fun = struct
 end
 
 module Renaming = struct
-  type t = Var.t Vec.vector
+  type t = (Var.t * term option) Vec.vector (* restore binding + unmark *)
 
-  let[@inline] create () = Vec.create ()
+  let[@inline] create () = Vec.create()
 
   let finish (st:t) =
-    Vec.iter (fun v -> Var.unmark v; v.v_binding <- None) st
+    Vec.iter (fun (v,bind) -> Var.unmark v; v.v_binding <- bind) st
 
   let with_ f =
     let r = create() in
@@ -170,7 +170,7 @@ module Term = struct
     | App {f; args} ->
       Format.fprintf out "(@[%a@ %a@])" Fun.pp f (pp_iarray pp) args
     | Eqn {sign;lhs;rhs} ->
-      Format.fprintf out "(@[%s@ %a@ %a@])"
+      Format.fprintf out "(@[<hv>%s@ %a@ %a@])"
         (if sign then "=" else "!=") pp lhs pp rhs
 
   (* term builder *)
@@ -178,7 +178,14 @@ module Term = struct
     fun[@inline] t_view -> t_view
 
   let var v : t = mk_ @@ Var v
-  let app f args : t = mk_ @@ App {f;args}
+
+  let app f args : t =
+    if Fun.arity f <> IArray.length args then (
+      Util.errorf "cannot apply %a (arity %d)@ to [@[%a@]]"
+        Fun.pp f (Fun.arity f) (Util.pp_iarray pp) args
+    );
+    mk_ @@ App {f;args}
+
   let app_l f args : t = app f (IArray.of_list args)
   let const f : t = app f IArray.empty
   let eqn ~sign lhs rhs = mk_ @@ Eqn {lhs; rhs; sign}
@@ -216,15 +223,14 @@ module Term = struct
       let rhs' = deref_deep rhs in
       if lhs==lhs' && rhs==rhs' then t else eqn ~sign lhs' rhs'
 
-  let rename (r:Renaming.t) (t:t) : term =
+  let rename (ren:Renaming.t) (t:t) : term =
     let rec aux t = match view t with
-      | Var v when Var.marked v -> t (* part of the renaming *)
-      | Var {v_binding=Some u;_} -> aux u (* follow *)
+      | Var ({v_binding=Some u; _} as v) when Var.marked v -> u (* follow renaming *)
       | Var v ->
         (* [v] is not bound, rename it to [v'] *)
         let v' = Var.copy v in
-        Var.mark v';
-        Vec.push r v'; (* do not rename [v'] *)
+        Var.mark v;
+        Vec.push ren (v, v.v_binding);
         let u = var v' in
         v.v_binding <- Some u;
         u
@@ -241,6 +247,30 @@ module Term = struct
   let rename_arr r = IArray.map (rename r)
 end
 
+module Clause = struct
+  type t = {
+    concl: Term.t IArray.t; (* non empty *)
+    guard: Term.t IArray.t;
+  }
+
+  let[@inline] concl c = c.concl
+  let[@inline] guard c = c.guard
+
+  let[@inline] equal a b : bool =
+    IArray.equal Term.equal a.concl b.concl &&
+    IArray.equal Term.equal a.guard b.guard
+
+  let[@inline] make a b : t = {concl=a; guard=b}
+
+  let pp out (c:t) =
+    let pp_iarray_b out a =
+      if IArray.is_empty a then Fmt.string out "()"
+      else if IArray.length a =1 then Term.pp out (IArray.get a 0)
+      else Fmt.fprintf out "(@[<hv>%a@])" (pp_iarray Term.pp) a
+    in
+    Fmt.fprintf out "(@[%a@ <- %a@])" pp_iarray_b c.concl pp_iarray_b c.guard
+end
+
 module Rule = struct
   type t = rule
 
@@ -249,13 +279,7 @@ module Rule = struct
   let equal a b : bool =
     Term.equal (concl a) (concl b) && IArray.equal Term.equal (body a) (body b)
 
-  let make concl body : t =
-    begin match Term.view concl with
-      | Term.App {f; _} when Fun.is_defined f ->  ()
-      | _ ->
-        Util.errorf "rule cannot have head %a,@ expect defined function" Term.pp concl
-    end;
-    { rule_concl=concl; rule_body=IArray.of_list body }
+  let to_clause r = Clause.make (IArray.singleton @@ concl r) (body r)
 
   let rename_in_place r : unit =
     Renaming.with_
@@ -263,22 +287,40 @@ module Rule = struct
          r.rule_concl <- Term.rename ren r.rule_concl;
          r.rule_body <- Term.rename_arr ren r.rule_body)
 
-  let pp out (r:t) =
-    Format.fprintf out "(@[%a <- %a@])" Term.pp (concl r) (pp_iarray Term.pp) (body r)
+  let make concl body : t =
+    begin match Term.view concl with
+      | Term.App {f; _} when Fun.is_defined f ->  ()
+      | _ ->
+        Util.errorf "rule cannot have head %a,@ expect defined function" Term.pp concl
+    end;
+    let r = { rule_concl=concl; rule_body=body } in
+    rename_in_place r;
+    r
 
-  let add_to_def (add:Fun.rule_promise) (l:t list) =
-    match Fun.kind add with
+  let make_l concl body = make concl (IArray.of_list body)
+
+  let pp out (r:t) =
+    let pp_body out b =
+      if IArray.is_empty b then Fmt.fprintf out "."
+      else Fmt.fprintf out " :-@ %a." (pp_iarray Term.pp) b
+    in
+    Format.fprintf out "(@[<hv>%a%a@])" Term.pp (concl r) pp_body (body r)
+
+  let add_to_def (f:Fun.rule_promise) (l:t list) =
+    match Fun.kind f with
     | Fun.F_defined def ->
       assert (def.rules = []);
       (* is there a rule that doesn't have [add] as head symbol? *)
       let bad_r =
-        CCList.find_pred (fun r -> match Term.view r.rule_concl with App {f; _} -> not @@ Fun.equal f add | _ -> true) l
+        CCList.find_pred (fun r -> match Term.view r.rule_concl with App a -> not @@ Fun.equal a.f f | _ -> true) l
       in
       begin match bad_r with
         | None ->  ()
-        | Some r -> Util.errorf "rule %a@ cannot be added to %a" pp r Fun.pp add
+        | Some r -> Util.errorf "rule %a@ cannot be added to %a" pp r Fun.pp f
       end;
-      List.iter rename_in_place l;
+      Log.logf 3
+        (fun k->k "(@[rule.add_to_def@ :fun %a@ :rules [@[<v>%a@]]@])"
+            Fun.pp f (Util.pp_list pp) l);
       def.rules <- l
     | _ -> assert false
 end

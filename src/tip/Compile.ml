@@ -23,7 +23,6 @@ type t = {
   mutable n: int;
 }
 
-(* FIXME: define rules for and/or/not, possibly by defining recfuns? *)
 let mk_builtins () : builtins =
   let true_ = Fun.mk_cstor (ID.make "true") ~arity:0 in
   let false_ = Fun.mk_cstor (ID.make "false") ~arity:0 in
@@ -41,35 +40,35 @@ let mk_builtins () : builtins =
   let true_t = T.const true_ in
   let false_t = T.const false_ in
   Rule.add_to_def def_and
-    [ Rule.make (T.app_l and_ [true_t; true_t; true_t]) [];
-      Rule.make (T.app_l and_ [false_t; y; false_t]) [];
-      Rule.make (T.app_l and_ [x; false_t; false_t]) [];
+    [ Rule.make_l (T.app_l and_ [true_t; true_t; true_t]) [];
+      Rule.make_l (T.app_l and_ [false_t; y; false_t]) [];
+      Rule.make_l (T.app_l and_ [x; false_t; false_t]) [];
     ];
   (* [or false false false]
      [or true y true]
      [or x true true] *)
   Rule.add_to_def def_or
-    [ Rule.make (T.app_l or_ [false_t; false_t; false_t]) [];
-      Rule.make (T.app_l or_ [true_t; y; true_t]) [];
-      Rule.make (T.app_l or_ [x; true_t; true_t]) [];
+    [ Rule.make_l (T.app_l or_ [false_t; false_t; false_t]) [];
+      Rule.make_l (T.app_l or_ [true_t; y; true_t]) [];
+      Rule.make_l (T.app_l or_ [x; true_t; true_t]) [];
     ];
   (* [imply false _ true]
      [imply true x x] *)
   Rule.add_to_def def_imply
-    [ Rule.make (T.app_l imply [false_t; x; true_t]) [];
-      Rule.make (T.app_l imply [true_t; x; x]) [];
+    [ Rule.make_l (T.app_l imply [false_t; x; true_t]) [];
+      Rule.make_l (T.app_l imply [true_t; x; x]) [];
     ];
-  (* [eq x y true <- x=y]
+  (* [eq x x true]
      [eq x y false <- x!=y] *)
   Rule.add_to_def def_eq
-    [ Rule.make (T.app_l eq [x; y; true_t]) [T.eq x y];
-      Rule.make (T.app_l eq [x; y; false_t]) [T.neq x y];
+    [ Rule.make_l (T.app_l eq [x; x; true_t]) [];
+      Rule.make_l (T.app_l eq [x; y; false_t]) [T.neq x y];
     ];
   (* [not false true]
      [not true false] *)
   Rule.add_to_def def_not
-    [ Rule.make (T.app_l not_ [false_t; true_t]) [];
-      Rule.make (T.app_l not_ [true_t; false_t]) [];
+    [ Rule.make_l (T.app_l not_ [false_t; true_t]) [];
+      Rule.make_l (T.app_l not_ [true_t; false_t]) [];
     ];
   let b = {
     true_; false_; and_; or_; not_; eq; imply;
@@ -147,8 +146,10 @@ end
 
 module M = Monad_choice.Make(M_state)
 
-(* compile [f vars = body] into a set of rules for [f] *)
-let compile_fun (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.t list =
+(* compile [f vars = body] into a set of rules for [f]
+   @param res_eq if provided, add constraints that [body = res_eq]
+*)
+let compile_fun ?res_eq (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.t list =
   let open M.Infix in
   let g = Gensym.create() in
   (* map [A.var] to [Var.t] *)
@@ -199,6 +200,7 @@ let compile_fun (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.t list =
            M.update (M_state.add_eq t c_term) >>= fun () ->
            aux subst rhs)
       |> M.append_l
+    | A.Not {A.term=A.Not t;_} -> aux subst t (* [not (not t) --> t] *)
     | A.Not u ->
       (* add [not u res], return [res] *)
       aux subst u >>= fun u ->
@@ -247,14 +249,26 @@ let compile_fun (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.t list =
         res
     end
   in
-  aux A.Var_map.empty body
-  |> M.run_list
-  |> List.rev_map
-    (fun (_,{M_state.subst;guards}) ->
-       let args = List.map (Subst.apply subst) @@ List.map Term.var t_vars in
-       let concl = Term.app_l f args in
-       let guards = List.map (Subst.apply subst) guards in
-       Rule.make concl guards)
+  begin
+    aux A.Var_map.empty body
+    |> M.run_list
+    |> CCList.filter_map
+      (fun (res,{M_state.subst;guards}) ->
+         (* produce a rule *)
+         let args = List.map (Subst.apply subst) @@ (List.map Term.var t_vars @ [res]) in
+         let concl = Term.app_l f args in
+         let guards = List.map (Subst.apply subst) guards in
+         let constr_res_eq = match res_eq with
+           | None -> None
+           | Some t -> Some (Term.eq t res)
+         in
+         let guards = CCList.cons_maybe constr_res_eq guards in
+         let r = Rule.make_l concl guards in
+         Log.logf 5
+           (fun k->k "(@[compile-fun.yield_rule@ :fun %a@ :rule %a@])" Fun.pp f Rule.pp r);
+         (* simplify rule *)
+         Simplify.simplify_rule r)
+  end
 
 (* compile recursive functions into relational functions *)
 let compile_defs (st:t) (defs:A.definition list) : unit =
@@ -262,34 +276,47 @@ let compile_defs (st:t) (defs:A.definition list) : unit =
     List.map
       (fun (f,ty,body) ->
          let args, _ret = A.Ty.unfold ty in
-         let arity = List.length args in
+         let arity = 1 + List.length args in (* need an additional arg for return value *)
          let fun_, rule_add = Fun.mk_defined f ~arity in
          ID.Tbl.add st.funs f fun_;
          let vars, body = A.unfold_fun body in
-         assert (List.length vars = arity);
+         assert (List.length vars + 1 = arity);
          fun_, vars, body, rule_add)
       defs
   in
   (* now compile rules *)
   List.iter
-    (fun (fun_, vars, body, rule_add) ->
-       let rules = compile_fun st fun_ vars body in
+    (fun (f, vars, body, rule_add) ->
+       let rules = compile_fun st f vars body in
        Rule.add_to_def rule_add rules)
     funs
 
 (* compile a term into a relational form, possibly introducing an auxiliary
-   function to encode its control flow *)
-let compile_term ?(vars=[]) (st:t) (t:A.term) : Term.t list =
-  let f, add_rules = Fun.mk_defined (ID.makef "aux_%d" st.n) ~arity:(List.length vars) in
-  match compile_fun st f vars t with
-  | [] -> []
-  | [r] -> Rule.body r |> IArray.to_list
-  | rules ->
-    (* define the function, and return [f vars] as goal *)
-    ID.Tbl.add st.funs (Fun.id f) f;
-    Rule.add_to_def add_rules rules;
-    let vars = List.map (fun v -> Term.var @@ Var.make @@ ID.name @@ A.Var.id v) vars in
-    [Term.app_l f vars]
+   function to encode its control flow
+   @param vars parameters to the term (and its auxiliary function)
+*)
+let compile_term ?(name="term") ?eq ?(vars=[]) (st:t) (t:A.term) : Term.t list =
+  let f, add_rules =
+    Fun.mk_defined (ID.makef "aux_%s_%d" name st.n) ~arity:(List.length vars + 1) in
+  let u =
+    match compile_fun ?res_eq:eq st f vars t with
+    | [] -> []
+(*     | [r] -> Rule.body r |> IArray.to_list *)
+    | rules ->
+      (* define the function, and return [f vars] as goal *)
+      ID.Tbl.add st.funs (Fun.id f) f;
+      Rule.add_to_def add_rules rules;
+      let vars = List.map (fun v -> Term.var @@ Var.make @@ ID.name @@ A.Var.id v) vars in
+      (* also add a result parameter *)
+      let res = match eq with
+        | Some t -> t
+        | None -> Term.var @@ Var.make "result"
+      in
+      [Term.app_l f (vars @ [res])]
+  in
+  Log.logf 5
+    (fun k->k "(@[compile-term@ %a@ :into [@[<hv>%a@]]@])" A.pp_term t (Util.pp_list Term.pp) u);
+  u
 
 let add_cstor st id ~arity =
   let fun_ = Fun.mk_cstor id ~arity in
@@ -315,10 +342,10 @@ let add_stmt (st:t) (stmt:A.statement) : unit =
   | A.Define defs ->
     compile_defs st defs
   | A.Assert g ->
-    let t = compile_term st g in
+    let t = compile_term ~name:"assert" ~eq:(Term.const st.builtins.true_) st g in
     st.goal <- List.rev_append t st.goal
   | A.Goal (vars, g) ->
-    let t = compile_term ~vars st g in
+    let t = compile_term ~name:"goal" ~eq:(Term.const st.builtins.true_) ~vars st g in
     st.goal <- List.rev_append t st.goal
 
 let stmts (l:A.statement list) : t =

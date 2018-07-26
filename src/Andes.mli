@@ -8,6 +8,7 @@ module Var = Types.Var
 module Fun = Types.Fun
 module Rule = Types.Rule
 module Types = Types
+module Simplify = Simplify
 
 module Log : sig
   val enable : int -> unit
