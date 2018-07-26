@@ -9,6 +9,9 @@ all: build test
 build:
 	dune build $(OPTS)
 
+build-release:
+	dune build $(OPTS) -p andes
+
 clean:
 	dune clean
 
