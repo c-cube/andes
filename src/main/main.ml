@@ -24,6 +24,7 @@ let main () =
   let files = CCVector.create () in
   let options = [
     "-d", Arg.Int Log.enable, " enable debug";
+    "-bt", Arg.Unit (fun () -> Printexc.record_backtrace true), " enable backtraces";
   ] |> Arg.align in
   Arg.parse options (CCVector.push files) "andes [options] <file>";
   CCVector.iter process_file files
