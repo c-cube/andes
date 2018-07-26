@@ -205,22 +205,25 @@ end = struct
       List.iter
         (fun r ->
            Log.logf 5 (fun k->k "(@[do_resolution.step@ :rule %a@ :term %a@])" Rule.pp r Term.pp t);
-           Undo_stack.with_ ~undo
-             (fun undo ->
-                try
-                  Unif.unify ~undo t (Rule.concl r);
-                  let c' =
-                    Clause.make c.Clause.concl
-                      (IArray.append guard @@ Rule.body r)
-                    |> Clause.deref_deep
-                  in
-                  Log.logf 5 (fun k->k "(@[resolution-yields@ %a@])" Clause.pp c');
-                  match mk_tree ~kind:Tree_open tree.t_entry c' with
-                  | None -> ()
-                  | Some tree' ->
-                    Vec.push tree.t_entry.e_tree tree';
-                    Queue.push tree' st.tasks;
-                with Unif.Fail -> ())
+           let c' =
+             Undo_stack.with_ ~undo
+               (fun undo ->
+                  try
+                    Unif.unify ~undo t (Rule.concl r);
+                    let c' =
+                      Clause.make c.Clause.concl (IArray.append guard @@ Rule.body r)
+                      |> Clause.deref_deep
+                    in
+                    Log.logf 5 (fun k->k "(@[resolution-yields@ %a@])" Clause.pp c');
+                    Some c'
+                  with Unif.Fail -> None)
+           in
+           if CCOpt.is_some c' then Rule.rename_in_place r; (* used r *)
+           match CCOpt.flat_map (mk_tree ~kind:Tree_open tree.t_entry) c' with
+           | None -> ()
+           | Some tree' ->
+             Vec.push tree.t_entry.e_tree tree';
+             Queue.push tree' st.tasks;
         )
         rules
     in
