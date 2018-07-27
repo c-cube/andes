@@ -21,6 +21,7 @@ and fun_kind =
   | F_cstor
   | F_defined of {
       mutable rules: rule list;
+      mutable recursive: bool;
     }
 
 (** Logic rule. Variables can be renamed in place when the rule is
@@ -76,6 +77,7 @@ module Fun = struct
     | F_cstor
     | F_defined of {
         mutable rules: rule list;
+        mutable recursive: bool;
       }
 
   type rule_promise = t
@@ -83,8 +85,8 @@ module Fun = struct
   let is_defined f = match f.f_kind with F_defined _ -> true | _ -> false
 
   let mk_cstor id ~arity : t = {f_id=id; f_arity=arity; f_kind=F_cstor}
-  let mk_defined id ~arity : t * rule_promise =
-    let f_kind = F_defined {rules=[]} in
+  let mk_defined id ~arity ~recursive : t * rule_promise =
+    let f_kind = F_defined {rules=[];recursive} in
     let f = {f_id=id; f_arity=arity; f_kind} in
     f, f
 

@@ -44,11 +44,11 @@ type t = {
 let mk_builtins () : builtins =
   let true_ = Fun.mk_cstor (ID.make "true") ~arity:0 in
   let false_ = Fun.mk_cstor (ID.make "false") ~arity:0 in
-  let and_, def_and = Fun.mk_defined (ID.make "and") ~arity:3 in
-  let or_, def_or = Fun.mk_defined (ID.make "or") ~arity:3 in
-  let imply, def_imply = Fun.mk_defined (ID.make "=>") ~arity:3 in
-  let eq, def_eq = Fun.mk_defined (ID.make "=") ~arity:3 in
-  let not_, def_not = Fun.mk_defined (ID.make "not") ~arity:2 in
+  let and_, def_and = Fun.mk_defined (ID.make "and") ~arity:3 ~recursive:false in
+  let or_, def_or = Fun.mk_defined (ID.make "or") ~arity:3 ~recursive:false in
+  let imply, def_imply = Fun.mk_defined (ID.make "=>") ~arity:3 ~recursive:false in
+  let eq, def_eq = Fun.mk_defined (ID.make "=") ~arity:3 ~recursive:false in
+  let not_, def_not = Fun.mk_defined (ID.make "not") ~arity:2 ~recursive:false in
   let module T = Term in
   let x = T.var @@ Var.make "x" in
   let y = T.var @@ Var.make "y" in
@@ -272,13 +272,13 @@ let compile_fun ?res_eq (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.
   end
 
 (* compile recursive functions into relational functions *)
-let compile_defs (st:t) (defs:A.definition list) : unit =
+let compile_defs ~recursive (st:t) (defs:A.definition list) : unit =
   let funs =
     List.map
       (fun (f,ty,body) ->
          let args, _ret = A.Ty.unfold ty in
          let arity = 1 + List.length args in (* need an additional arg for return value *)
-         let fun_, rule_add = Fun.mk_defined f ~arity in
+         let fun_, rule_add = Fun.mk_defined f ~recursive ~arity in
          ID.Tbl.add st.funs f fun_;
          let vars, body = A.unfold_fun body in
          assert (List.length vars + 1 = arity);
@@ -298,7 +298,8 @@ let compile_defs (st:t) (defs:A.definition list) : unit =
 *)
 let compile_term ?(name="term") ?eq ?(vars=[]) (st:t) (t:A.term) : Term.t list =
   let f, add_rules =
-    Fun.mk_defined (ID.makef "aux_%s_%d" name st.n) ~arity:(List.length vars + 1) in
+    Fun.mk_defined (ID.makef "aux_%s_%d" name st.n)
+      ~arity:(List.length vars + 1) ~recursive:false in
   let u =
     match compile_fun ?res_eq:eq st f vars t with
     | [] -> []
@@ -340,8 +341,8 @@ let add_stmt (st:t) (stmt:A.statement) : unit =
       tys
   | A.TyDecl _ -> ()
   | A.Decl (_, _) -> unimplemented "uninterpreted function"
-  | A.Define defs ->
-    compile_defs st defs
+  | A.Define {defs;recursive} ->
+    compile_defs ~recursive st defs
   | A.Assert g ->
     let t = compile_term ~name:"assert" ~eq:(Term.const st.builtins.true_) st g in
     st.goal <- List.rev_append t st.goal

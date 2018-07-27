@@ -25,6 +25,7 @@ module Fun : sig
     | F_cstor
     | F_defined of {
         mutable rules: rule list;
+        mutable recursive: bool;
       }
 
   val equal : t -> t -> bool
@@ -41,7 +42,7 @@ module Fun : sig
   type rule_promise
 
   val mk_cstor : ID.t -> arity:int -> t
-  val mk_defined : ID.t -> arity:int -> t * rule_promise
+  val mk_defined : ID.t -> arity:int -> recursive:bool -> t * rule_promise
 end
 
 (** {2 Variable renaming} *)

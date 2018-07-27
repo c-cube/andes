@@ -155,7 +155,10 @@ type statement =
   | Data of Ty.data list
   | TyDecl of ID.t (* new atomic cstor *)
   | Decl of ID.t * Ty.t
-  | Define of definition list
+  | Define of {
+      defs: definition list;
+      recursive: bool;
+    }
   | Assert of term
   | Goal of var list * term
 
@@ -304,7 +307,11 @@ let statement_to_tip (t:statement) : TA.statement list = match t with
         l
     in
     [TA.data [] l]
-  | Define l ->
+  | Define {defs=[id,ty,rhs];recursive=false} ->
+    let decl,body = mk_tip_def id ty rhs in
+    let d : TA.fun_def = {TA.fr_decl=decl; fr_body=body} in
+    [TA.fun_def d]
+  | Define {defs=l;_} ->
     let l =
       List.map
         (fun (id,ty,rhs) -> mk_tip_def id ty rhs)
@@ -844,7 +851,7 @@ and conv_statement_aux ctx syn (t:A.statement) : statement list = match A.view t
         l
     in
     [Data l]
-  | A.Stmt_def defs ->
+  | A.Stmt_def {defs;recursive} ->
     (* parse id,ty and declare them before parsing the function bodies *)
     let preparse (name, ty, rhs) =
       let ty, _ = conv_ty ctx ty in
@@ -859,7 +866,7 @@ and conv_statement_aux ctx syn (t:A.statement) : statement list = match A.view t
            id,ty,rhs)
         defs
     in
-    [Define defs]
+    [Define {defs;recursive}]
   | A.Stmt_assert t ->
     let t = conv_term ctx t in
     check_prop_ t;
@@ -941,7 +948,7 @@ let env_add_statement env st =
       env l
   | TyDecl id -> add_def id E_uninterpreted_ty env
   | Decl (id,ty) -> add_def id (E_const ty) env
-  | Define l ->
+  | Define {defs=l;_} ->
     List.fold_left
       (fun map (id,ty,def) -> add_def id (E_defined (ty,def)) map)
       env l
