@@ -268,6 +268,7 @@ let compile_fun ?res_eq (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.
          Log.logf 5
            (fun k->k "(@[compile-fun.yield_rule@ :fun %a@ :rule %a@])" Fun.pp f Rule.pp r);
          (* simplify rule *)
+         Util.Status.printf "simplify rule for %s" (Fun.to_string f);
          Simplify.simplify_rule r)
   end
 

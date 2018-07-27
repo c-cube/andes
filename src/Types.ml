@@ -97,7 +97,8 @@ module Fun = struct
   let[@inline] equal a b = ID.equal a.f_id b.f_id
   let[@inline] compare a b = ID.compare a.f_id b.f_id
   let[@inline] hash a = ID.hash a.f_id
-  let pp out v = ID.pp out v.f_id
+  let pp out f = ID.pp out f.f_id
+  let to_string f = ID.to_string f.f_id
 end
 
 module Renaming = struct

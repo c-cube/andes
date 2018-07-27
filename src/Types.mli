@@ -32,6 +32,7 @@ module Fun : sig
   val compare : t -> t -> int
   val hash : t -> int
   val pp : t CCFormat.printer
+  val to_string : t -> string
 
   val id : t -> ID.t
   val kind : t -> kind

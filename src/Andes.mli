@@ -30,9 +30,12 @@ type goal = Term.t list
 module Config : sig
   type t = {
     max_step: int;
+    progress: bool;
   }
 
   val default : t
+  val set_max_steps : int -> t -> t
+  val set_progress : bool -> t -> t
   val pp : t CCFormat.printer
 end
 

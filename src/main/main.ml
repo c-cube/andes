@@ -3,9 +3,12 @@ open Andes
 
 module C = Andes_tip.Compile
 
+let progress_ = ref false
+
 let solve stmts : unit =
   let goal = C.stmts stmts |> C.goal in
-  match Andes.solve goal with
+  let config = Andes.Config.default |> Andes.Config.set_progress !progress_ in
+  match Andes.solve ~config goal with
   | None -> Format.printf "@{<Yellow>[@<1>×]@} no solution found.@."
   | Some sol ->
     Format.printf "@{<Green>[@<1>✔]@} solution found!@ %a@." Andes.Solution.pp sol
@@ -23,6 +26,7 @@ let main () =
   Fmt.set_color_default true;
   let files = CCVector.create () in
   let options = [
+    "-p", Arg.Set progress_, " enable progress bar";
     "-d", Arg.Int Log.enable, " enable debug";
     "-bt", Arg.Unit (fun () -> Printexc.record_backtrace true), " enable backtraces";
   ] |> Arg.align in

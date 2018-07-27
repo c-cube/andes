@@ -32,12 +32,16 @@ type goal = Term.t list
 module Config = struct
   type t = {
     max_step: int;
+    progress: bool;
   }
 
-  let pp out c =
-    Format.fprintf out "(@[config@ :max_steps %d@])" c.max_step
+  let pp out { max_step; progress } =
+    Format.fprintf out "(@[config@ :max_steps %d@ :progress %B@])"
+      max_step progress
 
-  let default : t = {max_step=max_int}
+  let set_progress progress c = {c with progress}
+  let set_max_steps max_step c = {c with max_step}
+  let default : t = {max_step=max_int; progress=false}
 end
 
 (** {2 Main State of the Algorithm} *)
@@ -99,11 +103,22 @@ end = struct
     config: Config.t;
     root: tbl_entry; (* first entry *)
     tasks: tree Queue.t; (* trees to expand *)
+    mutable n_tasks: int;
   }
 
   let[@inline] n_root_sols (s:t) : int = Vec.size s.root.e_solutions
   let[@inline] has_task s = not @@ Queue.is_empty s.tasks
-  let[@inline] next_task s = Queue.pop s.tasks
+  let[@inline] next_task s = s.n_tasks <- s.n_tasks - 1; Queue.pop s.tasks
+  let[@inline] push_task s q = s.n_tasks <- 1 + s.n_tasks; Queue.push q s.tasks
+  let[@inline] n_tasks s = s.n_tasks
+
+  let pp_progress_ (st:t) : unit =
+    Util.Status.printf "entries %d | tasks %d | solutions %d"
+      (Vec.length st.tbl)
+      (n_tasks st)
+      (Vec.length st.root.e_solutions)
+
+  let pp_progress st = if st.config.Config.progress then pp_progress_ st
 
   let mk_tree =
     let n = ref 0 in
@@ -142,9 +157,7 @@ end = struct
       t.t_label <- L_solution;
       Vec.push t.t_entry.e_solutions t.t_clause;
       (* notify listeners *)
-      Vec.iter
-        (fun t' -> Queue.push t' st.tasks)
-        t.t_entry.e_listeners
+      Vec.iter (push_task st) t.t_entry.e_listeners
     ) else (
       t.t_kind <- Tree_dead;
       (* XXX: actually correct? just drop the tree? *)
@@ -221,7 +234,7 @@ end = struct
            | None -> ()
            | Some tree' ->
              Log.logf 5 (fun k->k "(@[resolution-yields@ %a@])" Clause.pp tree'.t_clause);
-             Queue.push tree' st.tasks;
+             push_task st tree';
         )
         rules
     in
@@ -248,15 +261,17 @@ end = struct
       end
 
   (* process tasks until we find a new solution *)
-  let next_ (s:t) : Clause.t option =
-    let n_sols0 = n_root_sols s in
-    while n_root_sols s = n_sols0 && has_task s do
-      let tree = next_task s in
-      process_tree s tree
+  let next_ (st:t) : Clause.t option =
+    let n_sols0 = n_root_sols st in
+    while n_root_sols st = n_sols0 && has_task st do
+      pp_progress st;
+      let tree = next_task st in
+      process_tree st tree
     done;
+    Util.Status.flush();
     (* if new solution was found, return it *)
-    if n_root_sols s > n_sols0 then (
-      Some (Vec.get s.root.e_solutions n_sols0)
+    if n_root_sols st > n_sols0 then (
+      Some (Vec.get st.root.e_solutions n_sols0)
     ) else None
 
   let sol_of_clause (s:t) (c:Clause.t) : Solution.t =
@@ -289,7 +304,7 @@ end = struct
       e_listeners=Vec.create();
     } in
     let s = {
-      tbl=Vec.return entry; config; root=entry; tasks=Queue.create();
+      tbl=Vec.return entry; config; root=entry; tasks=Queue.create(); n_tasks=0;
     } in
     (* see if the original clause is not absurd *)
     begin match mk_tree ~kind:Tree_root entry c with
