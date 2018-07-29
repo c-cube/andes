@@ -196,7 +196,9 @@ end = struct
              | Term.App {f; _} ->
                begin match Fun.kind f with
                  | F_defined def ->
-                   if at_root || not def.recursive || def.n_rec_calls <= 0 then (
+                   if at_root || not def.recursive || true || def.n_rec_calls <= 1 then (
+                     (* FIXME: when tabling works, restore this test
+                        to only use resolution on not-too-recursive recfuns *)
                      (* resolution will not duplicate effort since the function
                         is not recursive, or calls itself at most once,
                         thus avoiding explosion of the search space *)
