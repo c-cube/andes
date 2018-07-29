@@ -50,7 +50,7 @@ module Solver : sig
 
   val make : ?config:Config.t -> goal -> t
 
-  val next_solution : t -> Solution.t option
+  val next_solution : t -> Solution.t option * int
 end = struct
   type tree_kind = Tree_dead | Tree_root | Tree_open
 
@@ -104,6 +104,7 @@ end = struct
     root: tbl_entry; (* first entry *)
     tasks: tree Queue.t; (* trees to expand *)
     mutable n_tasks: int;
+    mutable n_steps: int;
   }
 
   let[@inline] n_root_sols (s:t) : int = Vec.size s.root.e_solutions
@@ -113,7 +114,8 @@ end = struct
   let[@inline] n_tasks s = s.n_tasks
 
   let pp_progress_ (st:t) : unit =
-    Util.Status.printf "entries %d | tasks %d | solutions %d"
+    Util.Status.printf "steps %d | entries %d | tasks %d | solutions %d"
+      st.n_steps
       (Vec.length st.tbl)
       (n_tasks st)
       (Vec.length st.root.e_solutions)
@@ -164,6 +166,12 @@ end = struct
       Util.errorf "tree %a@ should be dead or a solution"
         pp_tree t
     )
+
+  (* TODO:
+     - if tree is root, look for resolution (recursive of not) OR solution
+     - otherwise, look for non-rec function for resolution, OR
+       add-or-get table entry for rec function, OR solution
+   *)
 
   (* Label a single tree. We assume that the clause is simplified already. *)
   let process_tree (st:t) (tree:tree) : unit =
@@ -261,18 +269,23 @@ end = struct
       end
 
   (* process tasks until we find a new solution *)
-  let next_ (st:t) : Clause.t option =
+  let next_ (st:t) : Clause.t option * _ =
     let n_sols0 = n_root_sols st in
+    let old_steps = st.n_steps in
     while n_root_sols st = n_sols0 && has_task st do
+      st.n_steps <- 1 + st.n_steps;
       pp_progress st;
       let tree = next_task st in
       process_tree st tree
     done;
     Util.Status.flush();
     (* if new solution was found, return it *)
-    if n_root_sols st > n_sols0 then (
-      Some (Vec.get st.root.e_solutions n_sols0)
-    ) else None
+    let res =
+      if n_root_sols st > n_sols0 then (
+        Some (Vec.get st.root.e_solutions n_sols0)
+      ) else None
+    in
+    res, st.n_steps - old_steps
 
   let sol_of_clause (s:t) (c:Clause.t) : Solution.t =
     let goal = s.root.e_goal in
@@ -290,8 +303,9 @@ end = struct
     {Solution.subst=map; constr=IArray.to_list @@ Clause.guard c}
 
   (* convert a clause into a {!solution} *)
-  let next_solution s : Solution.t option =
-    CCOpt.map (sol_of_clause s) (next_ s)
+  let next_solution s : Solution.t option * _ =
+    let r, n = next_ s in
+    CCOpt.map (sol_of_clause s) r, n
 
   (* make a new solver for the given goal *)
   let make ?(config=Config.default) (g:goal) : t =
@@ -304,7 +318,8 @@ end = struct
       e_listeners=Vec.create();
     } in
     let s = {
-      tbl=Vec.return entry; config; root=entry; tasks=Queue.create(); n_tasks=0;
+      tbl=Vec.return entry; config; root=entry; tasks=Queue.create();
+      n_tasks=0; n_steps=0;
     } in
     (* see if the original clause is not absurd *)
     begin match mk_tree ~kind:Tree_root entry c with
@@ -316,10 +331,9 @@ end = struct
     s
 end
 
-let solve ?config (g:goal) : Solution.t option =
+let solve ?config (g:goal) : Solution.t option * _ =
   let s = Solver.make ?config g in
   Solver.next_solution s
-
 
 (**/**)
 module Fmt = CCFormat

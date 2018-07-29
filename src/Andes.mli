@@ -39,8 +39,9 @@ module Config : sig
   val pp : t CCFormat.printer
 end
 
-val solve : ?config:Config.t -> goal -> Solution.t option
-(** [solve goal] returns the first solution to the given goal *)
+val solve : ?config:Config.t -> goal -> Solution.t option * int
+(** [solve goal] returns the first solution to the given goal, as well
+    as the number of steps *)
 
 (**/**)
 module Fmt = CCFormat

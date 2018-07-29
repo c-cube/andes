@@ -38,6 +38,7 @@ module Fun : sig
   val kind : t -> kind
   val arity : t -> int
 
+  val is_recursive : t -> bool
   val is_defined : t -> bool
 
   type rule_promise

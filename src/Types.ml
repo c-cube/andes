@@ -83,6 +83,7 @@ module Fun = struct
   type rule_promise = t
 
   let is_defined f = match f.f_kind with F_defined _ -> true | _ -> false
+  let is_recursive f = match f.f_kind with F_defined {recursive=b;_} -> b | _ -> false
 
   let mk_cstor id ~arity : t = {f_id=id; f_arity=arity; f_kind=F_cstor}
   let mk_defined id ~arity ~recursive : t * rule_promise =

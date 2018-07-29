@@ -8,10 +8,11 @@ let progress_ = ref false
 let solve stmts : unit =
   let goal = C.stmts stmts |> C.goal in
   let config = Andes.Config.default |> Andes.Config.set_progress !progress_ in
-  match Andes.solve ~config goal with
-  | None -> Format.printf "@{<Yellow>[@<1>×]@} no solution found.@."
+  let res, steps = Andes.solve ~config goal in
+  match res with
+  | None -> Format.printf "@{<Yellow>[@<1>×]@} no solution found (%d steps).@." steps
   | Some sol ->
-    Format.printf "@{<Green>[@<1>✔]@} solution found!@ %a@." Andes.Solution.pp sol
+    Format.printf "@{<Green>[@<1>✔]@} solution found (%d steps)!@ %a@." steps Andes.Solution.pp sol
 
 let process_file (file:string) =
   Log.logf 1 (fun k->k "(@[@{<yellow>process-file@} %S@])" file);
