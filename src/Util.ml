@@ -47,15 +47,21 @@ module Status : sig
   val printf : ('a, out_channel, unit, unit) format4 -> 'a
   val print : string -> unit
   val flush : unit -> unit
+  val enable : bool -> unit
 end = struct
+  let enabled_ = ref false
+  let enable b = enabled_ := b
+
   (* TODO: find the proper code for "kill line" *)
   let flush_ (): unit = Printf.printf "\r%-80d\r%!" 0
-  let flush (): unit = if Log.level()=0 then flush_ ()
+  let flush (): unit = if !enabled_ && Log.level()=0 then flush_ ()
 
   let printf fmt =
-    if Log.level()=0 then flush_();
-    Printf.printf "[%.2f] " (Sys.time());
-    Printf.kfprintf
-      (fun out -> if Log.level()>0 then output_char out '\n'; Pervasives.flush out) stdout fmt
+    if !enabled_ then (
+      if Log.level()=0 then flush_();
+      Printf.printf "[%.2f] " (Sys.time());
+      Printf.kfprintf
+        (fun out -> if Log.level()>0 then output_char out '\n'; Pervasives.flush out) stdout fmt
+    ) else Printf.ikfprintf (fun _ -> ()) stdout fmt
   let print s = printf "%s" s
 end

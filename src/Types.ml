@@ -310,6 +310,9 @@ module Rule = struct
     Term.equal (concl a) (concl b) && IArray.equal Term.equal (body a) (body b)
 
   let to_clause r = Clause.make (IArray.singleton @@ concl r) (body r)
+  let head r = match Term.view @@ concl r with
+    | Term.App {f; _} -> f
+    | _ -> Util.errorf "rule.head"
 
   let rename_in_place r : unit =
     Renaming.with_
