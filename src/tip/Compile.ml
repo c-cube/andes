@@ -268,7 +268,6 @@ let compile_fun ?res_eq (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.
          Log.logf 5
            (fun k->k "(@[compile-fun.yield_rule@ :fun %a@ :rule %a@])" Fun.pp f Rule.pp r);
          (* simplify rule *)
-         Util.Status.printf "simplify rule for %s" (Fun.to_string f);
          Simplify.simplify_rule r)
   end
 
@@ -316,8 +315,10 @@ let compile_term ?(name="term") ?eq ?(vars=[]) (st:t) (t:A.term) : Term.t list =
       ~arity:(List.length vars + 1) ~recursive:false in
   let u =
     match compile_fun ?res_eq:eq st f vars t with
-    | [] -> []
-(*     | [r] -> Rule.body r |> IArray.to_list *)
+    | [] ->
+      (* absurd: [true=false] *)
+      [Term.eq (Term.const st.builtins.true_) (Term.const st.builtins.false_)]
+    (*     | [r] -> Rule.body r |> IArray.to_list *)
     | rules ->
       (* define the function, and return [f vars] as goal *)
       ID.Tbl.add st.funs (Fun.id f) f;
