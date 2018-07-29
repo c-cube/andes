@@ -21,7 +21,8 @@ and fun_kind =
   | F_cstor
   | F_defined of {
       mutable rules: rule list;
-      mutable recursive: bool;
+      recursive: bool;
+      mutable n_rec_calls: int; (* number of recursive sub-calls *)
     }
 
 (** Logic rule. Variables can be renamed in place when the rule is
@@ -77,7 +78,8 @@ module Fun = struct
     | F_cstor
     | F_defined of {
         mutable rules: rule list;
-        mutable recursive: bool;
+        recursive: bool;
+        mutable n_rec_calls: int; (* number of recursive sub-calls *)
       }
 
   type rule_promise = t
@@ -87,7 +89,7 @@ module Fun = struct
 
   let mk_cstor id ~arity : t = {f_id=id; f_arity=arity; f_kind=F_cstor}
   let mk_defined id ~arity ~recursive : t * rule_promise =
-    let f_kind = F_defined {rules=[];recursive} in
+    let f_kind = F_defined {rules=[];recursive; n_rec_calls=0} in
     let f = {f_id=id; f_arity=arity; f_kind} in
     f, f
 
@@ -203,17 +205,31 @@ module Term = struct
     | Var {v_binding=Some u;_} -> deref u
     | _ -> t
 
-  let vars_seq (seq:t Sequence.t) : Var.Set.t =
-    let res = ref Var.Set.empty in
-    let rec aux t = match view @@ deref t with
-      | Var v -> res := Var.Set.add v !res
+  let subterms t yield : unit =
+    let rec aux t =
+      let t = deref t in
+      yield t;
+      match view t with
+      | Var _ -> ()
       | App {args;_} -> IArray.iter aux args
       | Eqn {lhs;rhs;_} -> aux lhs; aux rhs
     in
-    seq aux;
-    !res
+    aux t
 
-  let vars t = vars_seq (Sequence.singleton t)
+  let vars_of_seq_ seq =
+    seq
+    |> Sequence.filter_map
+      (fun t -> match view t with
+         | Var v -> Some v
+         | _ -> None)
+    |> Var.Set.of_seq
+
+  let vars_seq (seq:t Sequence.t) : Var.Set.t =
+    seq
+    |> Sequence.flat_map subterms
+    |> vars_of_seq_
+
+  let vars t = vars_of_seq_ @@ subterms t
 
   (* follow variable bindings deeply *)
   let rec deref_deep t : t = match view t with
@@ -320,22 +336,24 @@ module Rule = struct
     in
     Format.fprintf out "(@[<hv>%a%a@])" Term.pp (concl r) pp_body (body r)
 
-  let add_to_def (f:Fun.rule_promise) (l:t list) =
+  let add_to_def ?(n_rec_calls=0) (f:Fun.rule_promise) (l:t list) =
     match Fun.kind f with
     | Fun.F_defined def ->
       assert (def.rules = []);
       (* is there a rule that doesn't have [add] as head symbol? *)
       let bad_r =
-        CCList.find_pred (fun r -> match Term.view r.rule_concl with App a -> not @@ Fun.equal a.f f | _ -> true) l
+        CCList.find_pred
+          (fun r -> match Term.view r.rule_concl with App a -> not @@ Fun.equal a.f f | _ -> true) l
       in
       begin match bad_r with
         | None ->  ()
         | Some r -> Util.errorf "rule %a@ cannot be added to %a" pp r Fun.pp f
       end;
       Log.logf 3
-        (fun k->k "(@[rule.add_to_def@ :fun %a@ :rules [@[<v>%a@]]@])"
-            Fun.pp f (Util.pp_list pp) l);
-      def.rules <- l
+        (fun k->k "(@[rule.add_to_def@ :fun %a@ :n-rec-calls %d@ :rules [@[<v>%a@]]@])"
+            Fun.pp f n_rec_calls (Util.pp_list pp) l);
+      def.rules <- l;
+      def.n_rec_calls <- n_rec_calls;
     | _ -> assert false
 end
 

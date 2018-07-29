@@ -272,6 +272,17 @@ let compile_fun ?res_eq (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.
          Simplify.simplify_rule r)
   end
 
+(* how many calls to functions of [defs] in [rules]' bodies? *)
+let count_rec_calls defs rules : int =
+  Sequence.of_list rules
+  |> Sequence.flat_map (fun r -> Rule.body r |> IArray.to_seq)
+  |> Sequence.flat_map Term.subterms
+  |> Sequence.filter
+    (fun t -> match Term.view t with
+       | Term.App {f;_} -> List.exists (fun (g,_,_) -> ID.equal g (Fun.id f)) defs
+       | _ -> false)
+  |> Sequence.length
+
 (* compile recursive functions into relational functions *)
 let compile_defs ~recursive (st:t) (defs:A.definition list) : unit =
   let funs =
@@ -290,7 +301,9 @@ let compile_defs ~recursive (st:t) (defs:A.definition list) : unit =
   List.iter
     (fun (f, vars, body, rule_add) ->
        let rules = compile_fun st f vars body in
-       Rule.add_to_def rule_add rules)
+       (* count how many calls to functions in the clique there are *)
+       let n_rec_calls = if recursive then count_rec_calls defs rules else 0 in
+       Rule.add_to_def ~n_rec_calls rule_add rules)
     funs
 
 (* compile a term into a relational form, possibly introducing an auxiliary

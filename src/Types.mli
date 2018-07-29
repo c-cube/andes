@@ -25,7 +25,8 @@ module Fun : sig
     | F_cstor
     | F_defined of {
         mutable rules: rule list;
-        mutable recursive: bool;
+        recursive: bool;
+        mutable n_rec_calls: int; (* number of recursive sub-calls *)
       }
 
   val equal : t -> t -> bool
@@ -44,7 +45,10 @@ module Fun : sig
   type rule_promise
 
   val mk_cstor : ID.t -> arity:int -> t
-  val mk_defined : ID.t -> arity:int -> recursive:bool -> t * rule_promise
+  val mk_defined :
+    ID.t ->
+    arity:int -> recursive:bool ->
+    t * rule_promise
 end
 
 (** {2 Variable renaming} *)
@@ -84,6 +88,7 @@ module Term : sig
   val neq : t -> t -> t
   val eqn : sign:bool -> t -> t -> t
 
+  val subterms : t -> t Sequence.t
   val vars_seq : t Sequence.t -> Var.Set.t
   val vars : t -> Var.Set.t
 
@@ -134,7 +139,7 @@ module Rule : sig
 
   val to_clause : t -> Clause.t
 
-  val add_to_def : Fun.rule_promise -> t list -> unit
+  val add_to_def : ?n_rec_calls:int -> Fun.rule_promise -> t list -> unit
   (** Define the set of rules for this function *)
 
   val rename_in_place : t -> unit
