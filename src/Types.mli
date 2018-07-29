@@ -138,6 +138,7 @@ module Rule : sig
   val make_l : Term.t -> Term.t list -> t
 
   val to_clause : t -> Clause.t
+  val head : t -> Fun.t
 
   val add_to_def : ?n_rec_calls:int -> Fun.rule_promise -> t list -> unit
   (** Define the set of rules for this function *)

@@ -32,16 +32,14 @@ type goal = Term.t list
 module Config = struct
   type t = {
     max_step: int;
-    progress: bool;
   }
 
-  let pp out { max_step; progress } =
-    Format.fprintf out "(@[config@ :max_steps %d@ :progress %B@])"
-      max_step progress
+  let pp out { max_step; } =
+    Format.fprintf out "(@[config@ :max_steps %d@])"
+      max_step
 
-  let set_progress progress c = {c with progress}
-  let set_max_steps max_step c = {c with max_step}
-  let default : t = {max_step=max_int; progress=false}
+  let set_max_steps max_step c = {max_step}
+  let default : t = {max_step=max_int; }
 end
 
 (** {2 Main State of the Algorithm} *)
@@ -71,7 +69,8 @@ end = struct
       }
     | L_defer of {
         entry: tbl_entry; (* where solutions come from *)
-        goal: Term.t IArray.t; (* the part of the clause's guard that we defer *)
+        goal: Term.t; (* the part of the clause's guard that we defer *)
+        goal_idx: int; (* index of goal in the clause's guard *)
         mutable offset: int;  (* offset in solutions *)
       } (* re-use solutions of this *)
 
@@ -94,8 +93,9 @@ end = struct
       | L_program { term; _ } ->
         Fmt.fprintf out ":program %a" Term.pp term
     in
-    Fmt.fprintf out "(@[tree[%d]@ :label %a@ :clause %a@])"
-      t.t_id pp_label t.t_label Clause.pp t.t_clause
+    Fmt.fprintf out "(@[tree[%d%s]@ :label %a@ :clause %a@])"
+      t.t_id (if t.t_kind=Tree_root then "/root" else "")
+      pp_label t.t_label Clause.pp t.t_clause
 
   (* TODO: indexing for same-length matching (feature vector?) *)
   type t = {
@@ -113,14 +113,12 @@ end = struct
   let[@inline] push_task s q = s.n_tasks <- 1 + s.n_tasks; Queue.push q s.tasks
   let[@inline] n_tasks s = s.n_tasks
 
-  let pp_progress_ (st:t) : unit =
+  let pp_progress (st:t) : unit =
     Util.Status.printf "steps %d | entries %d | tasks %d | solutions %d"
       st.n_steps
       (Vec.length st.tbl)
       (n_tasks st)
       (Vec.length st.root.e_solutions)
-
-  let pp_progress st = if st.config.Config.progress then pp_progress_ st
 
   let mk_tree =
     let n = ref 0 in
@@ -131,142 +129,238 @@ end = struct
         incr n;
         Some { t_id= !n; t_clause=c; t_label=L_none; t_kind=kind; t_entry=e }
 
+  let mk_entry g : tbl_entry =
+    { e_goal=g; e_solutions=Vec.create(); e_listeners=Vec.create(); }
+
   (* TODO: support abstraction function for entries:
      - need to see if abstraction exists already (just use it instead then)
      - otherwise proceed as usual, but handle cases where solutions
        do not actually unify with proper goal
   *)
 
-  (* is [c] a solution?
-     TODO: extend once we have constraints (i.e accept if the whole guard is
-     a conjunction of satisfiable constraints)
-  *)
+  let is_constraint (t:Term.t) : bool =
+    match Term.view t with
+    | Term.Eqn {sign=false; lhs; rhs} when not (Term.equal lhs rhs) -> true
+    | _ -> false
+
+  (* TODO: extend once we have proper decision procedures for extensible constraints *)
+  let sat_constraints (cs:Term.t IArray.t) : bool = true
+
+  (* is [c] a solution? *)
   let is_solution_c (c:Clause.t) : bool =
-    IArray.for_all
-      (fun t -> match Term.view t with
-         | Term.Eqn {sign=false; lhs; rhs} when not (Term.equal lhs rhs) -> true
-         | _ -> false)
-      (Clause.guard c)
+    IArray.for_all is_constraint (Clause.guard c) &&
+    sat_constraints (Clause.guard c)
 
-  (* this tree is either a solution, or dead, for no other rule applies to it.
-     Mark it accordingly and notify other entries if it's a solution *)
-  let tree_solution_or_dead (st:t) (t:tree) : unit =
-    assert (t.t_label = L_none);
-    if t.t_kind = Tree_dead then ()
-    else if is_solution_c t.t_clause then (
-      Log.logf 5 (fun k->k "(@[tree.is_solution@ %a@])" pp_tree t);
-      (* add to solutions *)
-      t.t_label <- L_solution;
-      Vec.push t.t_entry.e_solutions t.t_clause;
-      (* notify listeners *)
-      Vec.iter (push_task st) t.t_entry.e_listeners
-    ) else (
-      t.t_kind <- Tree_dead;
-      (* XXX: actually correct? just drop the tree? *)
-      Util.errorf "tree %a@ should be dead or a solution"
-        pp_tree t
-    )
+  (* find if some other entry subsumes this goal exactly
+     TODO: goal with multiple terms?
+     TODO: indexing to make this fast *)
+  let find_entry_for_goal ~undo (st:t) (goal:Term.t) : tbl_entry option =
+    Vec.to_seq st.tbl
+    |> Sequence.find_map
+      (fun entry ->
+         (* use [entry] iff it matches [goal] *)
+         let goal_entry = entry.e_goal in
+         if IArray.length goal_entry = 1 then (
+           Undo_stack.with_ ~undo (fun undo ->
+             try
+               Unif.match_ ~undo (IArray.get goal_entry 0) goal;
+               Some entry
+             with Unif.Fail -> None)
+         ) else None)
 
-  (* TODO:
+  (* choice of which rule to use for a tree:
      - if tree is root, look for resolution (recursive of not) OR solution
-     - otherwise, look for non-rec function for resolution, OR
+     - otherwise, look for non-rec/cheap-rec function for resolution, OR
        add-or-get table entry for rec function, OR solution
    *)
 
+  type rule_to_apply =
+    | RA_solution
+    | RA_dead (* dead tree *)
+    | RA_resolution of int * Fun.t * Rule.t list * Term.t (* direct resolution *)
+    | RA_tabling of int * Term.t (* rec function to memoize *)
+
+  exception Found_rule of rule_to_apply
+
+  let find_rule_to_apply ~at_root (st:t) (tree:tree) : rule_to_apply =
+    let c = tree.t_clause in
+    if is_solution_c c then RA_solution
+    else (
+      let to_memo = ref None in
+      try
+        IArray.iteri
+          (fun i t ->
+             match Term.view t with
+             | Term.Var _ -> assert false
+             | Term.Eqn _ -> ()
+             | Term.App {f; _} ->
+               begin match Fun.kind f with
+                 | F_defined def ->
+                   if at_root || not def.recursive || def.n_rec_calls <= 0 then (
+                     (* resolution will not duplicate effort since the function
+                        is not recursive, or calls itself at most once,
+                        thus avoiding explosion of the search space *)
+                     let ra = RA_resolution (i,f,def.rules,t) in
+                     raise (Found_rule ra)
+                   ) else if CCOpt.is_none !to_memo then (
+                     to_memo := Some (i,t) (* tabling on [t] if no resolution is found *)
+                   )
+                 | _ -> ()
+               end)
+          c.Clause.guard;
+        (* resolution failed, see if tabling applies *)
+        match !to_memo with
+        | None -> RA_dead
+        | Some (i,t) -> RA_tabling (i,t)
+      with Found_rule r -> r
+    )
+
+  (* perform resolution *)
+  let do_resolution ~undo (st:t) (tree:tree) (i:int) f (rules:_ list) (t:Term.t) : unit =
+    let c = tree.t_clause in
+    Log.logf 4 (fun k->k "(@[@{<yellow>do_resolution@}@ :term %a@])" Term.pp t);
+    let guard =
+      let a = c.Clause.guard in
+      IArray.init (IArray.length a-1)
+        (fun j -> if j<i then IArray.get a j else IArray.get a (j+1))
+    in
+    tree.t_label <- L_program {term=t; fun_=f};
+    let undo = Undo_stack.create() in
+    List.iter
+      (fun r ->
+         Log.logf 5 (fun k->k "(@[do_resolution.step@ :rule %a@ :term %a@])" Rule.pp r Term.pp t);
+         let c' =
+           Undo_stack.with_ ~undo
+             (fun undo ->
+                try
+                  Unif.unify ~undo t (Rule.concl r);
+                  let c' =
+                    Clause.make c.Clause.concl (IArray.append guard @@ Rule.body r)
+                    |> Clause.deref_deep
+                    |> Clause.rename
+                  in
+                  Some c'
+                with Unif.Fail -> None)
+         in
+         match CCOpt.flat_map (mk_tree ~kind:Tree_open tree.t_entry) c' with
+         | None -> ()
+         | Some tree' ->
+           Log.logf 5 (fun k->k "(@[resolution-yields@ %a@])" Clause.pp tree'.t_clause);
+           push_task st tree';
+      )
+      rules
+
+  (* [tree] defers to another entry, see if some resolutions now apply,
+     and fast-forward offset *)
+  let fast_forward_resolution ~undo (st:t) (tree:tree) : unit =
+    let c = tree.t_clause in
+    match tree.t_label with
+    | L_defer defer ->
+      let solutions = defer.entry.e_solutions in
+      let len = Vec.length solutions in
+      Log.logf 5 (fun k->k "(@[fast-forward-res (%d times)@ %a@ :to-goal (@[%a@])@])"
+          (len-defer.offset) pp_tree tree (pp_iarray Term.pp) defer.entry.e_goal);
+      (* guard of [c], minus the goal to resolve against the other entry *)
+      let guard_c =
+        let g = c.Clause.guard in
+        IArray.init (IArray.length g-1)
+          (fun j -> if j<defer.goal_idx then IArray.get g j else IArray.get g (j+1))
+      in
+      for i = defer.offset to len - 1 do
+        let sol = Vec.get solutions i in
+        Log.logf 5 (fun k->k "(@[resolved-against-solution@ :goal %a@ :sol %a@])"
+            Term.pp defer.goal Clause.pp sol);
+        let c' =
+          if IArray.length sol.Clause.concl <> 1 then None
+          else
+            Undo_stack.with_ ~undo (fun undo ->
+               try
+                 Unif.unify ~undo defer.goal (IArray.get sol.Clause.concl 0);
+                 let c' =
+                   Clause.make c.Clause.concl (IArray.append guard_c @@ sol.Clause.guard)
+                   |> Clause.deref_deep
+                   |> Clause.rename
+                 in
+                 Some c'
+               with Unif.Fail -> None)
+        in
+        match CCOpt.flat_map (mk_tree ~kind:Tree_open tree.t_entry) c' with
+        | None -> ()
+        | Some tree' ->
+          Log.logf 5 (fun k->k "(@[resolution-yields@ %a@])" Clause.pp tree'.t_clause);
+          push_task st tree';
+      done;
+      defer.offset <- len-1;
+    | _ -> assert false
+
+  (* defer [tree] to some new or existing entry for subogal [t] *)
+  let do_tabling ~undo (st:t) (tree:tree) (i:int) (t:Term.t) : unit =
+    Log.logf 4 (fun k->k "(@[@{<yellow>do_tabling@}@ :term %a@])" Term.pp t);
+    (* look if there's an existing entry for this subgoal *)
+    begin match find_entry_for_goal ~undo st t with
+      | Some entry ->
+        Log.logf 4 (fun k->k "(@[@{<yellow>defer_to_existing@}@ %a@])" (pp_iarray Term.pp) entry.e_goal);
+        Vec.push entry.e_listeners tree;
+        tree.t_label <- L_defer {entry; goal=t; goal_idx=i; offset=0;};
+        (* do resolution right now, in case [entry] has solutions *)
+        if not @@ Vec.is_empty entry.e_solutions then (
+          fast_forward_resolution ~undo st tree;
+        )
+      | None ->
+        Log.logf 4 (fun k->k "(@[@{<yellow>make_new_entry@}@])");
+        let ta = IArray.singleton t in
+        let c' = Clause.make ta ta |> Clause.rename in
+        let entry = mk_entry ta in
+        (* see if the original clause is not absurd *)
+        begin match mk_tree ~kind:Tree_root entry c' with
+          | None ->
+            Log.log 5 "(tree-is-dead)";
+            tree.t_kind <- Tree_dead;
+          | Some tree' ->
+            Log.logf 5 (fun k->k "(@[new-entry-with@ %a@])" pp_tree tree');
+            (* now we need to process [tree'] *)
+            push_task st tree';
+            Vec.push st.tbl entry;
+            (* defer [tree] to [entry], which has no solutions yet *)
+            tree.t_label <- L_defer {entry; goal=t; goal_idx=i; offset=0};
+        end;
+    end
+
+  let apply_rule ~undo (st:t) (tree:tree) (ra:rule_to_apply) : unit =
+    assert (tree.t_label = L_none);
+    begin match ra with
+      | RA_dead -> tree.t_kind <- Tree_dead
+      | RA_solution ->
+        Log.logf 5 (fun k->k "(@[@{<yellow>tree.is_solution@}@ %a@])" pp_tree tree);
+        (* add to solutions *)
+        tree.t_label <- L_solution;
+        Vec.push tree.t_entry.e_solutions tree.t_clause;
+        (* notify listeners *)
+        Vec.iter (push_task st) tree.t_entry.e_listeners;
+        ()
+      | RA_resolution (i,f,rules,t) ->
+        do_resolution ~undo st tree i f rules t
+      | RA_tabling (i,t) ->
+        do_tabling ~undo st tree i t
+    end
+
   (* Label a single tree. We assume that the clause is simplified already. *)
   let process_tree (st:t) (tree:tree) : unit =
-    Log.logf 2 (fun k->k "(@[@{<yellow>process_tree@}@ %a@])" pp_tree tree);
-    assert (tree.t_label = L_none);
-    let c = tree.t_clause in
+    Log.logf 2 (fun k->k "(@[@{<yellow>process_tree@}@ :n-steps %d@ %a@])" st.n_steps pp_tree tree);
     let undo = Undo_stack.create() in
-    (* find if some other entry subsumes part of the clause's guard?
-       TODO: indexing to make this fast *)
-    let find_existing () : (Term.t IArray.t * tbl_entry) option =
-      Vec.to_seq st.tbl
-      |> Sequence.find_map
-        (fun entry ->
-           (* use [entry] iff it matches some lit of the clause's guard *)
-           (* TODO: be able to multi-match *)
-           if IArray.length entry.e_goal = 1 then (
-             (* look in the body of clause *)
-             IArray.to_seq c.Clause.guard
-             |> Sequence.find_map
-               (fun t ->
-                  Undo_stack.with_ ~undo (fun undo ->
-                    try
-                      Unif.match_ ~undo (IArray.get entry.e_goal 0) t;
-                      Some (IArray.singleton t, entry)
-                    with Unif.Fail -> None))
-           ) else None)
-    in
-    (* find a member of the clause's guard that is eligible for resolution *)
-    let find_function () : _ option =
-      IArray.to_seq c.Clause.guard
-      |> Sequence.zip_i
-      |> Sequence.find_map
-        (fun (i,t) -> match Term.view t with
-           | Term.App {f; _} ->
-             begin match Fun.kind f with
-               | F_defined{rules} when rules<>[] -> Some (i,f,rules,t)
-               | _ -> None
-             end
-           | _ -> None)
-    in
-    (* perform resolution *)
-    let do_resolution (i:int) f (rules:_ list) (t:Term.t) : unit =
-      Log.logf 4 (fun k->k "(@[@{<yellow>do_resolution@}@ :term %a@])" Term.pp t);
-      let guard =
-        let a = c.Clause.guard in
-        IArray.init (IArray.length a-1)
-          (fun j -> if j<i then IArray.get a j else IArray.get a (j+1))
-      in
-      tree.t_label <- L_program {term=t; fun_=f};
-      let undo = Undo_stack.create() in
-      List.iter
-        (fun r ->
-           Log.logf 5 (fun k->k "(@[do_resolution.step@ :rule %a@ :term %a@])" Rule.pp r Term.pp t);
-           let c' =
-             Undo_stack.with_ ~undo
-               (fun undo ->
-                  try
-                    Unif.unify ~undo t (Rule.concl r);
-                    let c' =
-                      Clause.make c.Clause.concl (IArray.append guard @@ Rule.body r)
-                      |> Clause.deref_deep
-                      |> Clause.rename
-                    in
-                    Some c'
-                  with Unif.Fail -> None)
-           in
-           match CCOpt.flat_map (mk_tree ~kind:Tree_open tree.t_entry) c' with
-           | None -> ()
-           | Some tree' ->
-             Log.logf 5 (fun k->k "(@[resolution-yields@ %a@])" Clause.pp tree'.t_clause);
-             push_task st tree';
-        )
-        rules
-    in
-    match tree.t_kind with
-    | Tree_dead -> ()
-    | Tree_open ->
-      begin match find_existing () with
-        | Some (subgoal, entry) ->
-          Log.logf 4 (fun k->k "(@[@{<yellow>defer-to@}@ %a@])" (pp_iarray Term.pp) entry.e_goal);
-          Vec.push entry.e_listeners tree;
-          tree.t_label <- L_defer {entry; goal=subgoal; offset=0;};
-          (* TODO: do resolution right now if entry has solutions *)
-        | None ->
-          begin match find_function () with
-            | None -> tree_solution_or_dead st tree
-            | Some (i,f,rs,t) -> do_resolution i f rs t
-          end
-      end
-    | Tree_root ->
-      (* do not look for a node to defer to at the root *)
-      begin match find_function () with
-        | None -> tree_solution_or_dead st tree
-        | Some (i,f,rs,t) -> do_resolution i f rs t
-      end
+    begin match tree.t_kind, tree.t_label with
+      | Tree_dead, _ -> ()
+      | Tree_open, L_none ->
+        let rule = find_rule_to_apply ~at_root:false st tree in
+        apply_rule ~undo st tree rule
+      | Tree_root, L_none ->
+        let rule = find_rule_to_apply ~at_root:true st tree in
+        apply_rule ~undo st tree rule
+      | _, L_defer _ ->
+        (* defer to another entry which got new solutions *)
+        fast_forward_resolution ~undo st tree
+      | _, (L_program _ | L_solution) -> assert false (* should not process again *)
+    end
 
   (* process tasks until we find a new solution *)
   let next_ (st:t) : Clause.t option * _ =
@@ -312,12 +406,8 @@ end = struct
     assert (g <> []);
     let g = IArray.of_list g in
     let c = Clause.make g g in
-    let entry = {
-      e_goal=g;
-      e_solutions=Vec.create();
-      e_listeners=Vec.create();
-    } in
-    let s = {
+    let entry = mk_entry g in
+    let st = {
       tbl=Vec.return entry; config; root=entry; tasks=Queue.create();
       n_tasks=0; n_steps=0;
     } in
@@ -325,10 +415,9 @@ end = struct
     begin match mk_tree ~kind:Tree_root entry c with
       | None -> ()
       | Some tree ->
-        (* need to process this new [tree] *)
-        Queue.push tree s.tasks;
+        push_task st tree (* need to process this new [tree] *)
     end;
-    s
+    st
 end
 
 let solve ?config (g:goal) : Solution.t option * _ =
