@@ -77,6 +77,7 @@ module Term : sig
 
   val equal : t -> t -> bool
   val compare : t -> t -> int
+  val equal_deref : t -> t -> bool
   val hash : t -> int
   val pp : t CCFormat.printer
 
@@ -153,12 +154,16 @@ end
 (** {2 Stack to undo changes to terms} *)
 module Undo_stack : sig
   type t
+  type level
 
   val create : unit -> t
   (** Make a new stack *)
 
   val clear : t -> unit
   (** clear for re-using *)
+
+  val save : t -> level
+  val restore : t -> level -> unit
 
   val push_bind : t -> Var.t -> Term.t -> unit
 

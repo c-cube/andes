@@ -140,7 +140,7 @@ module Term = struct
 
   let[@inline] view t = t
 
-  let rec compare a b : int =
+  let rec compare_rec ~deref a b : int =
     let open CCOrd.Infix in
     let[@inline] to_int = function
       | Var _ -> 0
@@ -149,17 +149,21 @@ module Term = struct
     in
     match view a, view b with
     | _ when a==b -> 0 (* physically equal *)
+    | Var {v_binding=Some u;_}, _ when deref -> compare_rec ~deref u b
+    | _, Var {v_binding=Some u;_} when deref -> compare_rec ~deref a u
     | Var a, Var b -> Var.compare a b
     | App a, App b ->
       let c = Fun.compare a.f b.f in
-      if c<>0 then c else IArray.compare compare a.args b.args
+      if c<>0 then c else IArray.compare (compare_rec ~deref) a.args b.args
     | Eqn a, Eqn b ->
-      compare a.lhs b.lhs
-      <?> (compare, a.rhs, b.rhs)
+      compare_rec ~deref a.lhs b.lhs
+      <?> (compare_rec ~deref, a.rhs, b.rhs)
       <?> (CCOrd.bool, a.sign, b.sign)
     | Var _, _ | App _, _ | Eqn _, _ -> CCOrd.int (to_int @@ view a) (to_int @@ view b)
 
-  let[@inline] equal a b = a==b || compare a b = 0
+  let[@inline] compare a b = compare_rec ~deref:false a b
+  let[@inline] equal a b = a==b || compare_rec ~deref:false a b = 0
+  let[@inline] equal_deref a b = a==b || compare_rec ~deref:true a b = 0
 
   let rec hash a : int =
     match view a with
@@ -360,19 +364,7 @@ module Rule = struct
     | _ -> assert false
 end
 
-module Undo_stack : sig
-  type t
-
-  val push_bind : t -> Var.t -> term -> unit
-  (** [push_bind undo v t] bindings [v] to [t] and remembers to undo
-      this binding in [undo] *)
-
-  val create : unit -> t
-
-  val clear : t -> unit
-
-  val with_ : ?undo:t -> (t -> 'a) -> 'a
-end = struct
+module Undo_stack = struct
   type t = Var.t Vec.vector
 
   type level = int

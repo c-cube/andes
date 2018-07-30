@@ -13,29 +13,11 @@ exception Simp_absurd
 *)
 let simplify_ (c:Clause.t) : Clause.t option =
   let undo = Undo_stack.create() in
-  let concl = ref c.Clause.concl in
-  let to_process = Vec.of_array (IArray.to_array_copy c.Clause.guard) in
-  let new_guard = Vec.create () in
-  let pp_state out () =
-    Fmt.fprintf out "(@[:to_process (@[%a@])@ :new_guard (@[%a@])@])"
-      (Vec.pp Term.pp) to_process (Vec.pp Term.pp) new_guard
-  in
-  (* after some variable has been bound, re-simplify
-     terms that can be simplified *)
+  let idx = ref 0 in
+  let vec = Vec.of_array (IArray.to_array_copy c.Clause.guard) in
   let restart () : unit =
     Log.log 5 "(simplify.restart)";
-    concl := IArray.map Term.deref_deep !concl;
-    Vec.iteri (fun i t -> Vec.set to_process i (Term.deref_deep t)) to_process;
-    Vec.filter'
-      (fun t ->
-         let t' = Term.deref_deep t in
-         if Term.equal t t' then true
-         else (
-           Vec.push to_process t';
-           false
-         ))
-      new_guard;
-    Log.logf 10 (fun k->k "(@[simplify.restart@ :yields %a@])" pp_state());
+    idx := 0
   in
   let absurd (t:Term.t) : 'a =
     Log.logf 5 (fun k->k "(@[simplify.is_absurd@ %a@])" Term.pp t);
@@ -47,37 +29,40 @@ let simplify_ (c:Clause.t) : Clause.t option =
   let simp_t (t:Term.t) : unit = match Term.view t with
     | Term.Var _ -> assert false (* not at toplevel *)
     | Term.Eqn {sign=true; lhs; rhs} when Term.is_var lhs || Term.is_var rhs ->
-      (* FIXME: should we simplify even for non-vars? *)
       (* [x=t] replaces [x] with [t] everywhere, of fails by occur check.
          if binding succeeds, need to re-simplify again *)
-      Undo_stack.with_ ~undo (fun undo ->
-        try
-          Unif.unify ~undo lhs rhs;
+      let save = Undo_stack.save undo in
+      begin match Unif.unify ~undo lhs rhs with
+        | () ->
           Log.logf 5 (fun k->k "(@[simplify.eq-res@ %a@])" Term.pp t);
+          Vec.remove vec !idx;
           restart();
-        with Unif.Fail ->
-          absurd t)
+        | exception Unif.Fail ->
+          Undo_stack.restore undo save;
+          absurd t
+      end
     | Term.Eqn {sign=false; lhs; rhs} when Term.equal lhs rhs ->
       absurd t (* [t!=t] absurd *)
     | Term.Eqn {sign=false; lhs; rhs} ->
       Undo_stack.with_ ~undo (fun undo ->
         try
           Unif.unify ~undo lhs rhs;
-          Vec.push new_guard t (* keep *)
+          incr idx;
         with Unif.Fail ->
           (* never equal, drop *)
           Log.logf 5 (fun k->k "(@[simplify.trivial-neq@ %a@])" Term.pp t);
+          Vec.remove vec !idx;
       )
     | Term.Eqn {sign=true; lhs; rhs} ->
       (* check that [lhs] and [rhs] are unifiable, if yes keep them *)
       Undo_stack.with_ ~undo (fun undo ->
         try Unif.unify ~undo lhs rhs
         with Unif.Fail -> absurd t);
-      Vec.push new_guard t
+      Vec.remove vec !idx;
     | Term.App {f; _} ->
       begin match Fun.kind f with
-        | Fun.F_cstor -> Vec.push new_guard t
-        | Fun.F_defined {rules=[]} -> Vec.push new_guard t (* not defined yet *)
+        | Fun.F_cstor -> incr idx
+        | Fun.F_defined {rules=[]} -> incr idx (* not defined yet *)
         | Fun.F_defined {rules} ->
           (* try to apply the rules, and simplify if zero or one apply *)
           let n_success = ref 0 in
@@ -100,28 +85,30 @@ let simplify_ (c:Clause.t) : Clause.t option =
               (* exactly one rule applies, so resolve with its unconditionally *)
               Log.logf 5 (fun k->k "(@[simplify.uniq-rule@ :goal %a@ :rule %a@])"
                   Term.pp t Rule.pp rule);
-              Undo_stack.with_ ~undo (fun undo ->
-                Unif.unify ~undo (Rule.concl rule) t;
-                let rule_body = Rule.body rule |> IArray.map Term.deref_deep in
-                IArray.iter (Vec.push to_process) rule_body;
-                restart());
+              Unif.unify ~undo (Rule.concl rule) t;
+              let rule_body = Rule.body rule |> IArray.map Term.deref_deep in
+              (* remove lit, push guard *)
+              Vec.remove vec !idx;
+              IArray.iter (Vec.push vec) rule_body;
+              restart();
               Rule.rename_in_place rule; (* consume rule's current version *)
             | exception Several_rules ->
               (* several rules, keep *)
-              Vec.push new_guard t
+              incr idx
             | _::_::_ -> assert false
           end
       end
   in
   (* simplification fixpoint *)
   try
-    while not @@ Vec.is_empty to_process do
-      let t = Vec.pop_exn to_process in
+    while !idx < Vec.length vec do
+      let t = Vec.get vec !idx in
       Log.logf 5 (fun k->k "(@[simplify.process@ %a@])" Term.pp t);
       simp_t t
     done;
     let c' =
-      Clause.make !concl (Vec.to_array new_guard |> IArray.of_array_unsafe)
+      Clause.make c.Clause.concl (Vec.to_array vec |> IArray.of_array_unsafe)
+      |> Clause.deref_deep
     in
     if not @@ Clause.equal c c' then (
       Log.logf 3
