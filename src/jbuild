@@ -3,5 +3,5 @@
   ((name andes)
    (public_name andes)
    (libraries (containers sequence))
-   (flags (:standard -safe-string))
+   (flags (:standard -safe-string -w @8))
    ))
