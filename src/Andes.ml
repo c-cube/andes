@@ -22,8 +22,8 @@ module Solution = struct
 
   let pp out s =
     Fmt.fprintf out "(@[solution@ :subst {@[%a@]}@ :constraint %a@])"
-      Fmt.(seq ~sep:(return "@ ") @@ within "(" ")" @@ hbox @@ pair ~sep:(return "@ := ") Var.pp Term.pp)
-      (Var.Map.to_seq s.subst)
+      Fmt.(iter ~sep:(return "@ ") @@ within "(" ")" @@ hbox @@ pair ~sep:(return "@ := ") Var.pp Term.pp)
+      (Var.Map.to_iter s.subst)
       (Fmt.Dump.list Term.pp) s.constr
 end
 

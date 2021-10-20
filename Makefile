@@ -13,10 +13,10 @@ build-release:
 	@dune build $(OPTS) -p andes
 
 clean:
-	dune clean
+	@dune clean
 
 test:
-	dune runtest
+	@dune runtest
 
 ocp-indent:
 	@which ocp-indent > /dev/null || { \
