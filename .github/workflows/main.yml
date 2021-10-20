@@ -27,6 +27,6 @@ jobs:
     - run: opam pin -n .
     - run: opam depext -yt andes
     - run: opam install -t . --deps-only
-    - run: opam install smtlib-utils
+    - run: opam install tip-parser
     - run: opam exec -- dune build @install -p andes
     - run: opam exec -- dune runtest -p andes

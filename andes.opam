@@ -17,7 +17,7 @@ depends: [
   "ocaml" { >= "4.03" }
 ]
 depopts: [
-  "tip-parser" { >= "0.3" }
+  "tip-parser" { >= "0.6" }
 ]
 tags: [ "prolog" "datalog" "logic" "tabling" ]
 homepage: "https://github.com/c-cube/andes"
