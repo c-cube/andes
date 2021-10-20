@@ -273,14 +273,14 @@ let compile_fun ?res_eq (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.
 
 (* how many calls to functions of [defs] in [rules]' bodies? *)
 let count_rec_calls defs rules : int =
-  Sequence.of_list rules
-  |> Sequence.flat_map (fun r -> Rule.body r |> IArray.to_seq)
-  |> Sequence.flat_map Term.subterms
-  |> Sequence.filter
+  Iter.of_list rules
+  |> Iter.flat_map (fun r -> Rule.body r |> IArray.to_iter)
+  |> Iter.flat_map Term.subterms
+  |> Iter.filter
     (fun t -> match Term.view t with
        | Term.App {f;_} -> List.exists (fun (g,_,_) -> ID.equal g (Fun.id f)) defs
        | _ -> false)
-  |> Sequence.length
+  |> Iter.length
 
 (* compile recursive functions into relational functions *)
 let compile_defs ~recursive (st:t) (defs:A.definition list) : unit =

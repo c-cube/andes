@@ -214,6 +214,7 @@ module Tip = struct
       | A.Eq (a,b) -> eq (aux a) (aux b)
       | A.Distinct ([] | [_]) ->
         tip_error "`distinct` should have at least 2 arguments"
+      | A.Is_a _ -> tip_error "not handled: is-a"
       | A.Distinct l ->
         (* encode [distinct t1...tn] into [And_{i,j<i} ti!=tj] *)
         List.map aux l
@@ -310,6 +311,9 @@ module Tip = struct
         A.pp_stmt st
     | A.Stmt_lemma _ ->
       tip_error ?loc "smbc does not know how to handle `lemma` statements"
+    | A.Stmt_exit
+    | A.Stmt_set_logic _
+    | A.Stmt_set_info _
     | A.Stmt_check_sat -> None
 end
 

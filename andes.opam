@@ -3,21 +3,18 @@ name: "andes"
 license: "MIT"
 version: "dev"
 author: "Simon Cruanes"
+synopsis: "Logic engine for recursion and datatypes"
 maintainer: ["simon.cruanes.2007@m4x.org"]
 build: [
-  ["dune" "build" "-p" name]
-]
-build-doc: [
-  ["dune" "build" "@doc" "-p" name]
-]
-build-test: [
-  ["dune" "runtest"]
+  ["dune" "build" "-p" name "-j" jobs]
+  ["dune" "build" "@doc" "-p" name "-j" jobs] {with-doc}
+  ["dune" "runtest" "-p" name "-j" jobs] {with-test}
 ]
 depends: [
-  "dune" {build}
-  "containers"
-  "sequence"
-  "ocaml" { >= "4.02" }
+  "dune"
+  "containers" { >= "3.0" }
+  "iter" { >= "1.0" }
+  "ocaml" { >= "4.03" }
 ]
 depopts: [
   "tip-parser" { >= "0.3" }

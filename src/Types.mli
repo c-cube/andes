@@ -88,8 +88,8 @@ module Term : sig
   val neq : t -> t -> t
   val eqn : sign:bool -> t -> t -> t
 
-  val subterms : t -> t Sequence.t
-  val vars_seq : t Sequence.t -> Var.Set.t
+  val subterms : t -> t Iter.t
+  val vars_seq : t Iter.t -> Var.Set.t
   val vars : t -> Var.Set.t
 
   val is_var : t -> bool

@@ -26,7 +26,7 @@ let simplify_ (c:Clause.t) : Clause.t option =
     Log.log 5 "(simplify.restart)";
     concl := IArray.map Term.deref_deep !concl;
     Vec.iteri (fun i t -> Vec.set to_process i (Term.deref_deep t)) to_process;
-    Vec.filter'
+    Vec.filter_in_place
       (fun t ->
          let t' = Term.deref_deep t in
          if Term.equal t t' then true
@@ -77,8 +77,8 @@ let simplify_ (c:Clause.t) : Clause.t option =
     | Term.App {f; _} ->
       begin match Fun.kind f with
         | Fun.F_cstor -> Vec.push new_guard t
-        | Fun.F_defined {rules=[]} -> Vec.push new_guard t (* not defined yet *)
-        | Fun.F_defined {rules} ->
+        | Fun.F_defined {rules=[]; _} -> Vec.push new_guard t (* not defined yet *)
+        | Fun.F_defined {rules; _} ->
           (* try to apply the rules, and simplify if zero or one apply *)
           let n_success = ref 0 in
           begin match

@@ -1,0 +1,5 @@
+(library
+ (name andes)
+ (public_name andes)
+ (libraries containers iter)
+ (flags :standard -safe-string -warn-error -a+8))

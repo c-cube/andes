@@ -165,7 +165,7 @@ module Term = struct
     match view a with
     | Var v -> CCHash.combine2 10 (Var.hash v)
     | App {f; args} ->
-      CCHash.combine3 20 (Fun.hash f) (CCHash.seq hash @@ IArray.to_seq args)
+      CCHash.combine3 20 (Fun.hash f) (CCHash.iter hash @@ IArray.to_iter args)
     | Eqn { sign; lhs; rhs } ->
       CCHash.combine4 30 (CCHash.bool sign) (hash lhs) (hash rhs)
 
@@ -218,15 +218,15 @@ module Term = struct
 
   let vars_of_seq_ seq =
     seq
-    |> Sequence.filter_map
+    |> Iter.filter_map
       (fun t -> match view t with
          | Var v -> Some v
          | _ -> None)
-    |> Var.Set.of_seq
+    |> Var.Set.of_iter
 
-  let vars_seq (seq:t Sequence.t) : Var.Set.t =
+  let vars_seq (seq:t Iter.t) : Var.Set.t =
     seq
-    |> Sequence.flat_map subterms
+    |> Iter.flat_map subterms
     |> vars_of_seq_
 
   let vars t = vars_of_seq_ @@ subterms t

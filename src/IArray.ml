@@ -68,7 +68,7 @@ let exists p a =
 
 (** {2 Conversions} *)
 
-type 'a sequence = ('a -> unit) -> unit
+type 'a iter = ('a -> unit) -> unit
 type 'a gen = unit -> 'a option
 
 let of_list = Array.of_list
@@ -93,17 +93,17 @@ let to_array_copy = Array.copy
 
 let of_array_unsafe a = a (* careful with that axe, Eugene *)
 
-let to_seq a k = iter k a
+let to_iter a k = iter k a
 
-let of_seq s =
+let of_iter s =
   let l = ref [] in
   s (fun x -> l := x :: !l);
   Array.of_list (List.rev !l)
 
 (*$Q
   Q.(list int) (fun l -> \
-    let g = Sequence.of_list l in \
-    of_seq g |> to_seq |> Sequence.to_list = l)
+    let g = Iter.of_list l in \
+    of_seq g |> to_seq |> Iter.to_list = l)
 *)
 
 let rec gen_to_list_ acc g = match g() with

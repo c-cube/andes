@@ -3,7 +3,7 @@ module Fmt = CCFormat
 module Vec = CCVector
 
 let pp_iarray pp_x out a =
-  Fmt.(seq ~sep:(return "@ ") @@ pp_x) out (IArray.to_seq a)
+  Fmt.(iter ~sep:(return "@ ") @@ pp_x) out (IArray.to_iter a)
 
 let pp_list pp_x out l =
   Fmt.(list ~sep:(return "@ ") pp_x) out l

@@ -38,7 +38,7 @@ module Config = struct
     Format.fprintf out "(@[config@ :max_steps %d@])"
       max_step
 
-  let set_max_steps max_step c = {max_step}
+  let set_max_steps max_step _c = {max_step}
   let default : t = {max_step=max_int; }
 end
 
@@ -144,7 +144,7 @@ end = struct
     | _ -> false
 
   (* TODO: extend once we have proper decision procedures for extensible constraints *)
-  let sat_constraints (cs:Term.t IArray.t) : bool = true
+  let sat_constraints (_cs:Term.t IArray.t) : bool = true
 
   (* is [c] a solution? *)
   let is_solution_c (c:Clause.t) : bool =
@@ -155,8 +155,8 @@ end = struct
      TODO: goal with multiple terms?
      TODO: indexing to make this fast *)
   let find_entry_for_goal ~undo (st:t) (goal:Term.t) : tbl_entry option =
-    Vec.to_seq st.tbl
-    |> Sequence.find_map
+    Vec.to_iter st.tbl
+    |> Iter.find_map
       (fun entry ->
          (* use [entry] iff it matches [goal] *)
          let goal_entry = entry.e_goal in
@@ -182,7 +182,7 @@ end = struct
 
   exception Found_rule of rule_to_apply
 
-  let find_rule_to_apply ~at_root (st:t) (tree:tree) : rule_to_apply =
+  let find_rule_to_apply ~at_root (_st:t) (tree:tree) : rule_to_apply =
     let c = tree.t_clause in
     if is_solution_c c then RA_solution
     else (
@@ -218,7 +218,7 @@ end = struct
     )
 
   (* perform resolution *)
-  let do_resolution ~undo (st:t) (tree:tree) (i:int) f (rules:_ list) (t:Term.t) : unit =
+  let do_resolution ~undo:_ (st:t) (tree:tree) (i:int) f (rules:_ list) (t:Term.t) : unit =
     let c = tree.t_clause in
     Log.logf 4 (fun k->k "(@[@{<yellow>do_resolution@}@ :term %a@])" Term.pp t);
     let guard =
@@ -385,15 +385,15 @@ end = struct
 
   let sol_of_clause (s:t) (c:Clause.t) : Solution.t =
     let goal = s.root.e_goal in
-    let vars = Term.vars_seq (IArray.to_seq goal) in
+    let vars = Term.vars_seq (IArray.to_iter goal) in
     let map =
       Undo_stack.with_ (fun undo ->
         assert (IArray.length goal = IArray.length (Clause.concl c));
         try
           IArray.iter2 (Unif.unify ~undo) goal (Clause.concl c);
-          Var.Set.to_seq vars
-          |> Sequence.map (fun v -> v, Term.deref_deep (Term.var v))
-          |> Var.Map.of_seq
+          Var.Set.to_iter vars
+          |> Iter.map (fun v -> v, Term.deref_deep (Term.var v))
+          |> Var.Map.of_iter
         with Unif.Fail -> assert false)
     in
     {Solution.subst=map; constr=IArray.to_list @@ Clause.guard c}

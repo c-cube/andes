@@ -2,15 +2,15 @@
 .PHONY: clean build build-dev all test
 
 J?=3
-OPTS= -j $(J)
+OPTS= -j $(J) --profile=release
 
 all: build test
 
 build:
-	dune build $(OPTS)
+	@dune build $(OPTS)
 
 build-release:
-	dune build $(OPTS) -p andes
+	@dune build $(OPTS) -p andes
 
 clean:
 	dune clean
@@ -28,10 +28,7 @@ reindent: ocp-indent
 	@find src '(' -name '*.ml' -or -name '*.mli' ')' -print0 | xargs -0 echo "reindenting: "
 	@find src '(' -name '*.ml' -or -name '*.mli' ')' -print0 | xargs -0 ocp-indent -i
 
-WATCH_TARGET?=all
+WATCH_TARGET?=@all
 watch:
-	while find src/ -print0 | xargs -0 inotifywait -e delete_self -e modify ; do \
-		echo "============ at `date` ==========" ; \
-		make $(WATCH_TARGET) ; \
-	done
+	@dune build $(WATCH_TARGET) -w
 
