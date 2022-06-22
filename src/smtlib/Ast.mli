@@ -120,7 +120,6 @@ type statement =
       recursive: bool;
     }
   | Assert of term
-  | Goal of var list * term
 
 (** {2 Constructors} *)
 
@@ -181,11 +180,8 @@ end
 type syntax =
   | Auto
   (** Guess based on file extension *)
-  | Tip
-  (** Syntax for Tip (https://github.com/tip-org/)
-
-      This is a small subset of Smtlib2, so we can reuse the same S-expr
-      parser as {!Smbc} *)
+  | Smtlib
+  (** Smtlib-2.6 syntax *)
 
 val string_of_syntax : syntax -> string
 

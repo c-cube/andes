@@ -1,6 +1,0 @@
-(library
- (name andes_tip)
- (public_name andes.tip)
- (optional)
- (libraries andes tip-parser result seq)
- (flags :standard -safe-string -w @8))

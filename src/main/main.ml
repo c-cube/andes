@@ -1,7 +1,7 @@
 
 open Andes
 
-module C = Andes_tip.Compile
+module C = Andes_smtlib.Compile
 
 let solve stmts : unit =
   let goal = C.stmts stmts |> C.goal in
@@ -14,7 +14,7 @@ let solve stmts : unit =
 
 let process_file (file:string) =
   Log.logf 1 (fun k->k "(@[@{<yellow>process-file@} %S@])" file);
-  match Andes_tip.parse_file file with
+  match Andes_smtlib.parse_file file with
   | Error msg ->
     Format.printf "@{<Red>Error@} when parsing %S:@ %s@." file msg;
     exit 1

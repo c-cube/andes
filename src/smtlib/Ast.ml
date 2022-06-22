@@ -2,7 +2,7 @@
 (* This file is free software. See file "license" for more details. *)
 
 open Andes
-module Loc = Tip_loc
+module Loc = Smtlib_utils.V_2_6.Loc
 
 (** {1 Preprocessing AST} *)
 
@@ -160,7 +160,6 @@ type statement =
       recursive: bool;
     }
   | Assert of term
-  | Goal of var list * term
 
 (** {2 Helper} *)
 
@@ -173,7 +172,7 @@ let unfold_fun t =
 
 (** {2 To TIP} *)
 
-module TA = Tip_ast
+module TA = Smtlib_utils.V_2_6.Ast
 
 let id_to_tip : ID.t -> string =
   let id_to_tip_tbl = ID.Tbl.create 64 in
@@ -301,12 +300,12 @@ let statement_to_tip (t:statement) : TA.statement list = match t with
                          Printf.sprintf "select_%s_%d" c i, ty_to_tip ty_arg)
                       ty_args
                   in
-                  TA.mk_cstor c ty_args)
+                  TA.mk_cstor ~vars:[] c ty_args)
            in
-           id_to_tip data_id, cstors)
+           (id_to_tip data_id,0), cstors)
         l
     in
-    [TA.data [] l]
+    [TA.data l]
   | Define {defs=[id,ty,rhs];recursive=false} ->
     let decl,body = mk_tip_def id ty rhs in
     let d : TA.fun_def = {TA.fr_decl=decl; fr_body=body} in
@@ -321,12 +320,6 @@ let statement_to_tip (t:statement) : TA.statement list = match t with
     [TA.funs_rec decls bodies]
   | Assert t ->
     [TA.assert_ (term_to_tip t)]
-  | Goal (vars,e) ->
-    let vars = List.map typed_var_to_tip vars in
-    let e = term_to_tip e in
-    [TA.assert_not ~ty_vars:[] (TA.forall vars (TA.not_ e));
-     TA.check_sat ();
-    ]
 
 let pp_term_tip out t = TA.pp_term out (term_to_tip t)
 let pp_term = pp_term_tip
@@ -487,11 +480,11 @@ module A = Parse_ast
 
 type syntax =
   | Auto
-  | Tip
+  | Smtlib
 
 let string_of_syntax = function
   | Auto -> "auto"
-  | Tip -> "tip"
+  | Smtlib -> "smt2"
 
 module StrTbl = CCHashtbl.Make(struct
     type t = string
@@ -786,7 +779,8 @@ let rec conv_statement ctx (syn:syntax) (s:A.statement): statement list =
   Ctx.set_loc ctx ?loc:s.A.loc;
   conv_statement_aux ctx syn s
 
-and conv_statement_aux ctx syn (t:A.statement) : statement list = match A.view t with
+and conv_statement_aux ctx syn (t:A.statement) : statement list =
+  match A.view t with
   | A.Stmt_include s ->
     (* include now! *)
     let dir = ctx.Ctx.include_dir in
@@ -871,31 +865,19 @@ and conv_statement_aux ctx syn (t:A.statement) : statement list = match A.view t
     let t = conv_term ctx t in
     check_prop_ t;
     [Assert t]
-  | A.Stmt_goal (vars, t) ->
-    let vars =
-      List.map
-        (fun (s,ty) ->
-           let ty, _ = conv_ty ctx ty in
-           s, ty)
-        vars
-    in
-    Ctx.with_vars ctx vars
-      (fun vars ->
-         let t = conv_term ctx t in
-         [Goal (vars, t)])
 
 and parse_file_exn ctx (syn:syntax) ~file : statement list =
   let syn = match syn with
-    | Tip -> syn
-    | Auto -> Tip
+    | Smtlib -> syn
+    | Auto -> Smtlib
   in
   Log.logf 2 (fun k->k "use syntax: %s" (string_of_syntax syn));
   let l = match syn with
     | Auto -> assert false
-    | Tip ->
+    | Smtlib ->
       (* delegate parsing to [Tip_parser] *)
-      Tip_util.parse_file_exn file
-      |> CCList.filter_map A.Tip.conv_stmt
+      Smtlib_utils.V_2_6.parse_file_exn file
+      |> CCList.filter_map A.Smtlib.conv_stmt
   in
   CCList.flat_map (conv_statement ctx syn) l
 
@@ -906,11 +888,11 @@ let parse ~include_dir ~file syn =
 
 let parse_stdin syn = match syn with
   | Auto -> errorf "impossible to guess input format with <stdin>"
-  | Tip ->
+  | Smtlib ->
     let ctx = Ctx.create ~include_dir:"." () in
     try
-      Tip_util.parse_chan_exn ~filename:"<stdin>" stdin
-      |> CCList.filter_map A.Tip.conv_stmt
+      Smtlib_utils.V_2_6.parse_chan_exn ~filename:"<stdin>" stdin
+      |> CCList.filter_map A.Smtlib.conv_stmt
       |> CCList.flat_map (conv_statement ctx syn)
       |> CCResult.return
     with e -> Result.Error (Printexc.to_string e)
@@ -952,7 +934,6 @@ let env_add_statement env st =
     List.fold_left
       (fun map (id,ty,def) -> add_def id (E_defined (ty,def)) map)
       env l
-  | Goal _
   | Assert _ -> env
 
 let env_of_statements seq =

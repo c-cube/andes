@@ -1,0 +1,6 @@
+(library
+ (name andes_smtlib)
+ (public_name andes.smtlib)
+ (optional)
+ (libraries andes smtlib-utils result seq)
+ (flags :standard -safe-string -w @8))

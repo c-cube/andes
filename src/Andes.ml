@@ -430,4 +430,5 @@ let solve ?config (g:goal) : Solution.t option * _ =
 module Fmt = CCFormat
 module Util = Util
 module IArray = IArray
+module Option = CCOpt
 (**/**)

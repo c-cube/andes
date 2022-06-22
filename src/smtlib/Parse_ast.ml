@@ -5,7 +5,7 @@
 
 open Andes
 module Util = Andes.Util
-module Loc = Tip_loc
+module Loc = Smtlib_utils.V_2_6.Loc
 
 type var = string
 
@@ -55,7 +55,6 @@ and stmt =
     }
   | Stmt_data of (string * (string * (string option * ty) list) list) list
   | Stmt_assert of term
-  | Stmt_goal of typed_var list * term (* satisfy this *)
 
 let ty_prop = Ty_bool
 let ty_const s = Ty_const s
@@ -93,7 +92,6 @@ let decl ?loc f ty = _mk ?loc (Stmt_decl (f, ty))
 let def ?loc ~recursive l = _mk ?loc (Stmt_def {defs=l; recursive})
 let data ?loc l = _mk ?loc (Stmt_data l)
 let assert_ ?loc t = _mk ?loc (Stmt_assert t)
-let goal ?loc vars t = _mk ?loc (Stmt_goal (vars, t))
 
 let loc t = t.loc
 let view t = t.stmt
@@ -140,8 +138,6 @@ and pp_typed_var out (v,ty) =
 let pp_stmt out (st:statement) = match view st with
   | Stmt_include s -> fpf out "(include %S)" s
   | Stmt_assert t -> fpf out "(@[assert@ %a@])" pp_term t
-  | Stmt_goal (vars,t) ->
-    fpf out "(@[goal@ (@[%a@])@ %a@])" (Util.pp_list pp_typed_var) vars pp_term t
   | Stmt_ty_decl s ->
     fpf out "(@[declare-sort@ %s 0@])" s
   | Stmt_decl (s, ty) ->
@@ -167,21 +163,22 @@ let pp_stmt out (st:statement) = match view st with
 
 (** {2 Conversion from {!Tip_ast}} *)
 
-exception Tip_error of Loc.t option * string
+exception Smtlib_error of Loc.t option * string
 
-let tip_error ?loc msg = raise (Tip_error (loc, msg))
-let tip_errorf ?loc msg = CCFormat.ksprintf msg ~f:(tip_error ?loc)
+let smtlib_error ?loc msg = raise (Smtlib_error (loc, msg))
+let smtlib_errorf ?loc msg = CCFormat.ksprintf msg ~f:(smtlib_error ?loc)
 
-module Tip = struct
-  module A = Tip_ast
+module Smtlib = struct
+  module A = Smtlib_utils.V_2_6.Ast
 
   let rec conv_ty (ty:A.ty): ty = match ty with
     | A.Ty_bool -> ty_prop
     | A.Ty_app (a, []) -> ty_const a
     | A.Ty_app (_, _::_) ->
-      tip_errorf "cannot convert polymorphic type@ `@[%@]`" A.pp_ty ty
+      smtlib_errorf "cannot convert polymorphic type@ `@[%@]`" A.pp_ty ty
     | A.Ty_arrow (args, ret) ->
       ty_arrow_l (List.map conv_ty args) (conv_ty ret)
+    | A.Ty_real -> smtlib_errorf "cannot handle Real"
 
   let conv_typed_var (v,ty) = v, conv_ty ty
   let conv_typed_vars = List.map conv_typed_var
@@ -213,8 +210,8 @@ module Tip = struct
       | A.Imply (a,b) -> imply (aux a) (aux b)
       | A.Eq (a,b) -> eq (aux a) (aux b)
       | A.Distinct ([] | [_]) ->
-        tip_error "`distinct` should have at least 2 arguments"
-      | A.Is_a _ -> tip_error "not handled: is-a"
+        smtlib_error "`distinct` should have at least 2 arguments"
+      | A.Is_a _ -> smtlib_error "not handled: is-a"
       | A.Distinct l ->
         (* encode [distinct t1...tn] into [And_{i,j<i} ti!=tj] *)
         List.map aux l
@@ -228,12 +225,14 @@ module Tip = struct
           l (aux rhs)
       | A.Forall (vars,body) -> forall_l (conv_typed_vars vars) (aux body)
       | A.Exists (vars,body) -> exists_l (conv_typed_vars vars) (aux body)
+      | A.Attr (t, _) -> aux t
+      | A.Arith _ -> smtlib_error "cannot handle arith term"
     in
     aux t
 
   let conv_fun_decl ?loc f =
     if f.A.fun_ty_vars <> []
-    then tip_errorf ?loc "cannot convert polymorphic function@ %a"
+    then smtlib_errorf ?loc "cannot convert polymorphic function@ %a"
         (A.pp_fun_decl A.pp_ty) f;
     let args = List.map conv_ty f.A.fun_args in
     let ty = ty_arrow_l args (conv_ty f.A.fun_ret) in
@@ -241,7 +240,7 @@ module Tip = struct
 
   let conv_fun_def ?loc f body =
     if f.A.fun_ty_vars <> []
-    then tip_errorf ?loc "cannot convert polymorphic function@ %a"
+    then smtlib_errorf ?loc "cannot convert polymorphic function@ %a"
         (A.pp_fun_decl A.pp_typed_var) f;
     let args = List.map conv_typed_var f.A.fun_args in
     let ty =
@@ -261,16 +260,18 @@ module Tip = struct
     let loc = A.loc st in
     match A.view st with
     | A.Stmt_decl_sort (s, 0) ->
-      ty_decl ?loc s |> CCOpt.return
+      ty_decl ?loc s |> Option.some
     | A.Stmt_decl_sort (_, _) ->
-      tip_errorf ?loc "cannot handle polymorphic type@ %a" A.pp_stmt st
+      smtlib_errorf ?loc "cannot handle polymorphic type@ %a" A.pp_stmt st
     | A.Stmt_decl fr ->
       let f, ty = conv_fun_decl ?loc fr in
-      decl ?loc f ty |> CCOpt.return
+      decl ?loc f ty |> Option.some
     | A.Stmt_assert t ->
-      assert_ ?loc (conv_term t) |> CCOpt.return
-    | A.Stmt_data ([], l) ->
-      let conv_data (s, cstors) =
+      assert_ ?loc (conv_term t) |> Option.some
+    | A.Stmt_data l ->
+      let conv_data ((s,n), cstors) =
+        if n<>0 then 
+          smtlib_errorf ?loc "cannot convert polymorphic data@ `@[%a@]`" A.pp_stmt st;
         let cstors =
           List.map
             (fun c ->
@@ -283,37 +284,37 @@ module Tip = struct
         s, cstors
       in
       let l = List.map conv_data l in
-      data ?loc l |> CCOpt.return
-    | A.Stmt_data (_::_, _) ->
-      tip_errorf ?loc "cannot convert polymorphic data@ `@[%a@]`" A.pp_stmt st
+      data ?loc l |> Option.some
     | A.Stmt_fun_def f ->
       let id, ty, t = conv_fun_def ?loc f.A.fr_decl f.A.fr_body in
-      def ~recursive:false ?loc [id, ty, t] |> CCOpt.return
+      def ~recursive:false ?loc [id, ty, t] |> Option.some
     | A.Stmt_fun_rec f ->
       let id, ty, t = conv_fun_def ?loc f.A.fr_decl f.A.fr_body in
-      def ~recursive:true ?loc [id, ty, t] |> CCOpt.return
+      def ~recursive:true ?loc [id, ty, t] |> Option.some
     | A.Stmt_funs_rec fsr ->
       let {A.fsr_decls=decls; fsr_bodies=bodies} = fsr in
       if List.length decls <> List.length bodies
-      then tip_errorf ?loc "declarations and bodies should have same length";
+      then smtlib_errorf ?loc "declarations and bodies should have same length";
       let l = List.map2 (conv_fun_def ?loc) decls bodies in
-      def ~recursive:true ?loc l |> CCOpt.return
-    | A.Stmt_assert_not ([], t) ->
-      let vars, t = open_forall (conv_term t) in
-      let g = not_ t in (* negate *)
-      goal ?loc vars g |> CCOpt.return
-    | A.Stmt_prove ([], t) ->
-      let vars, t = open_forall (conv_term t) in
-      let g = not_ t in (* negate *)
-      goal ?loc vars g |> CCOpt.return
-    | A.Stmt_assert_not (_::_, _) | A.Stmt_prove _ ->
-      tip_errorf ?loc "cannot convert polymorphic goal@ `@[%a@]`"
-        A.pp_stmt st
-    | A.Stmt_lemma _ ->
-      tip_error ?loc "smbc does not know how to handle `lemma` statements"
+      def ~recursive:true ?loc l |> Option.some
     | A.Stmt_exit
     | A.Stmt_set_logic _
     | A.Stmt_set_info _
+    | A.Stmt_get_assertions
+    | A.Stmt_get_assignment
+    | A.Stmt_get_model
+    | A.Stmt_get_proof
+    | A.Stmt_get_unsat_assumptions
+    | A.Stmt_get_unsat_core
+    | A.Stmt_reset
+    | A.Stmt_reset_assertions
+    | A.Stmt_set_option _
+    | A.Stmt_get_info _
+    | A.Stmt_get_option _
+    | A.Stmt_get_value _
+    | A.Stmt_check_sat_assuming _
+    | A.Stmt_pop _
+    | A.Stmt_push _
     | A.Stmt_check_sat -> None
 end
 
@@ -330,6 +331,6 @@ let () = Printexc.register_printer
     (function
       | Parse_error (loc, msg) ->
         Some (CCFormat.sprintf "parse error at %a:@ %s" Loc.pp_opt loc msg)
-      | Tip_error (loc, msg) ->
+      | Smtlib_error (loc, msg) ->
         Some (CCFormat.sprintf "TIP conversion error at %a:@ %s" Loc.pp_opt loc msg)
       | _ -> None)

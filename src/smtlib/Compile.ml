@@ -361,9 +361,6 @@ let add_stmt (st:t) (stmt:A.statement) : unit =
   | A.Assert g ->
     let t = compile_term ~name:"assert" ~eq:(Term.const st.builtins.true_) st g in
     st.goal <- List.rev_append t st.goal
-  | A.Goal (vars, g) ->
-    let t = compile_term ~name:"goal" ~eq:(Term.const st.builtins.true_) ~vars st g in
-    st.goal <- List.rev_append t st.goal
 
 let stmts (l:A.statement list) : t =
   let st = create () in
