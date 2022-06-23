@@ -21,6 +21,10 @@ let process_file (file:string) =
   | Ok stmts ->
     solve stmts
 
+let set_timeout_ t =
+  Log.logf 1(fun k->k "timeout: %ds" t);
+  ignore (Unix.alarm t : int)
+
 let main () =
   Sys.catch_break true;
   Catapult_file.with_setup @@ fun () ->
@@ -31,6 +35,8 @@ let main () =
     "-p", Arg.Unit (fun () -> Util.Status.enable true), " enable progress bar";
     "-d", Arg.Int Log.enable, " enable debug";
     "-bt", Arg.Unit (fun () -> Printexc.record_backtrace true), " enable backtraces";
+    "-t", Arg.Int set_timeout_, " timeout in seconds";
+    "--timeout", Arg.Int set_timeout_, " timeout in seconds";
   ] |> Arg.align in
   Arg.parse options (CCVector.push files) "andes [options] <file>";
   CCVector.iter process_file files
