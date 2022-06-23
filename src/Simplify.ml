@@ -14,7 +14,7 @@ exception Simp_absurd
 let simplify_ (c:Clause.t) : Clause.t option =
   let undo = Undo_stack.create() in
   let concl = ref c.Clause.concl in
-  let to_process = Vec.of_array (IArray.to_array_copy c.Clause.guard) in
+  let to_process = Vec.of_array c.Clause.guard in
   let new_guard = Vec.create () in
   let pp_state out () =
     Fmt.fprintf out "(@[:to_process (@[%a@])@ :new_guard (@[%a@])@])"
@@ -23,8 +23,9 @@ let simplify_ (c:Clause.t) : Clause.t option =
   (* after some variable has been bound, re-simplify
      terms that can be simplified *)
   let restart () : unit =
+    Tracing.instant "restart";
     Log.log 5 "(simplify.restart)";
-    concl := IArray.map Term.deref_deep !concl;
+    concl := Array.map Term.deref_deep !concl;
     Vec.iteri (fun i t -> Vec.set to_process i (Term.deref_deep t)) to_process;
     Vec.filter_in_place
       (fun t ->
@@ -102,8 +103,8 @@ let simplify_ (c:Clause.t) : Clause.t option =
                   Term.pp t Rule.pp rule);
               Undo_stack.with_ ~undo (fun undo ->
                 Unif.unify ~undo (Rule.concl rule) t;
-                let rule_body = Rule.body rule |> IArray.map Term.deref_deep in
-                IArray.iter (Vec.push to_process) rule_body;
+                let rule_body = Rule.body rule |> Array.map Term.deref_deep in
+                Array.iter (Vec.push to_process) rule_body;
                 restart());
               Rule.rename_in_place rule; (* consume rule's current version *)
             | exception Several_rules ->
@@ -121,7 +122,7 @@ let simplify_ (c:Clause.t) : Clause.t option =
       simp_t t
     done;
     let c' =
-      Clause.make !concl (Vec.to_array new_guard |> IArray.of_array_unsafe)
+      Clause.make !concl (Vec.to_array new_guard)
     in
     if not @@ Clause.equal c c' then (
       Log.logf 3
@@ -133,16 +134,18 @@ let simplify_ (c:Clause.t) : Clause.t option =
     None
 
 let simplify_c c : _ option =
+  let@ () = Tracing.with_ "simplify" in
   Util.Status.print "simplify clause";
   simplify_ c
 
 let simplify_rule (r:Rule.t) : Rule.t option =
+  let@ () = Tracing.with_ "simplify-rule" in
   Util.Status.printf "simplify rule for %s" (Fun.to_string @@ Rule.head r);
   let c = Rule.to_clause r in
   match simplify_ c with
   | None -> None
   | Some c ->
-    assert (IArray.length c.Clause.concl = 1);
-    let r = Rule.make (IArray.get c.Clause.concl 0) c.Clause.guard in
+    assert (Array.length c.Clause.concl = 1);
+    let r = Rule.make (Array.get c.Clause.concl 0) c.Clause.guard in
     Some r
 

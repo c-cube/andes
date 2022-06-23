@@ -75,7 +75,7 @@ end = struct
       } (* re-use solutions of this *)
 
   and tbl_entry = {
-    e_goal: Term.t IArray.t;
+    e_goal: Term.t Array.t;
     e_solutions: Clause.t Vec.vector;
     e_listeners: tree Vec.vector;
   }
@@ -89,7 +89,7 @@ end = struct
       | L_solution -> Fmt.string out ":solution"
       | L_defer {entry;offset;_} ->
         Fmt.fprintf out "@[<2>:defer[%d] (@[goal %a@])@]"
-          offset (Util.pp_iarray Term.pp) entry.e_goal
+          offset (Util.pp_array Term.pp) entry.e_goal
       | L_program { term; _ } ->
         Fmt.fprintf out ":program %a" Term.pp term
     in
@@ -144,11 +144,11 @@ end = struct
     | _ -> false
 
   (* TODO: extend once we have proper decision procedures for extensible constraints *)
-  let sat_constraints (_cs:Term.t IArray.t) : bool = true
+  let sat_constraints (_cs:Term.t Array.t) : bool = true
 
   (* is [c] a solution? *)
   let is_solution_c (c:Clause.t) : bool =
-    IArray.for_all is_constraint (Clause.guard c) &&
+    Array.for_all is_constraint (Clause.guard c) &&
     sat_constraints (Clause.guard c)
 
   (* find if some other entry subsumes this goal exactly
@@ -160,10 +160,10 @@ end = struct
       (fun entry ->
          (* use [entry] iff it matches [goal] *)
          let goal_entry = entry.e_goal in
-         if IArray.length goal_entry = 1 then (
+         if Array.length goal_entry = 1 then (
            Undo_stack.with_ ~undo (fun undo ->
              try
-               Unif.match_ ~undo (IArray.get goal_entry 0) goal;
+               Unif.match_ ~undo (Array.get goal_entry 0) goal;
                Some entry
              with Unif.Fail -> None)
          ) else None)
@@ -188,7 +188,7 @@ end = struct
     else (
       let to_memo = ref None in
       try
-        IArray.iteri
+        Array.iteri
           (fun i t ->
              match Term.view t with
              | Term.Var _ -> assert false
@@ -204,7 +204,7 @@ end = struct
                         thus avoiding explosion of the search space *)
                      let ra = RA_resolution (i,f,def.rules,t) in
                      raise (Found_rule ra)
-                   ) else if CCOpt.is_none !to_memo then (
+                   ) else if Option.is_none !to_memo then (
                      to_memo := Some (i,t) (* tabling on [t] if no resolution is found *)
                    )
                  | _ -> ()
@@ -223,8 +223,8 @@ end = struct
     Log.logf 4 (fun k->k "(@[@{<yellow>do_resolution@}@ :term %a@])" Term.pp t);
     let guard =
       let a = c.Clause.guard in
-      IArray.init (IArray.length a-1)
-        (fun j -> if j<i then IArray.get a j else IArray.get a (j+1))
+      Array.init (Array.length a-1)
+        (fun j -> if j<i then Array.get a j else Array.get a (j+1))
     in
     tree.t_label <- L_program {term=t; fun_=f};
     let undo = Undo_stack.create() in
@@ -237,14 +237,14 @@ end = struct
                 try
                   Unif.unify ~undo t (Rule.concl r);
                   let c' =
-                    Clause.make c.Clause.concl (IArray.append guard @@ Rule.body r)
+                    Clause.make c.Clause.concl (Array.append guard @@ Rule.body r)
                     |> Clause.deref_deep
                     |> Clause.rename
                   in
                   Some c'
                 with Unif.Fail -> None)
          in
-         match CCOpt.flat_map (mk_tree ~kind:Tree_open tree.t_entry) c' with
+         match Option.flat_map (mk_tree ~kind:Tree_open tree.t_entry) c' with
          | None -> ()
          | Some tree' ->
            Log.logf 5 (fun k->k "(@[resolution-yields@ %a@])" Clause.pp tree'.t_clause);
@@ -261,32 +261,32 @@ end = struct
       let solutions = defer.entry.e_solutions in
       let len = Vec.length solutions in
       Log.logf 5 (fun k->k "(@[fast-forward-res (%d times)@ %a@ :to-goal (@[%a@])@])"
-          (len-defer.offset) pp_tree tree (pp_iarray Term.pp) defer.entry.e_goal);
+          (len-defer.offset) pp_tree tree (pp_array Term.pp) defer.entry.e_goal);
       (* guard of [c], minus the goal to resolve against the other entry *)
       let guard_c =
         let g = c.Clause.guard in
-        IArray.init (IArray.length g-1)
-          (fun j -> if j<defer.goal_idx then IArray.get g j else IArray.get g (j+1))
+        Array.init (Array.length g-1)
+          (fun j -> if j<defer.goal_idx then Array.get g j else Array.get g (j+1))
       in
       for i = defer.offset to len - 1 do
         let sol = Vec.get solutions i in
         Log.logf 5 (fun k->k "(@[resolved-against-solution@ :goal %a@ :sol %a@])"
             Term.pp defer.goal Clause.pp sol);
         let c' =
-          if IArray.length sol.Clause.concl <> 1 then None
+          if Array.length sol.Clause.concl <> 1 then None
           else
             Undo_stack.with_ ~undo (fun undo ->
                try
-                 Unif.unify ~undo defer.goal (IArray.get sol.Clause.concl 0);
+                 Unif.unify ~undo defer.goal (Array.get sol.Clause.concl 0);
                  let c' =
-                   Clause.make c.Clause.concl (IArray.append guard_c @@ sol.Clause.guard)
+                   Clause.make c.Clause.concl (Array.append guard_c @@ sol.Clause.guard)
                    |> Clause.deref_deep
                    |> Clause.rename
                  in
                  Some c'
                with Unif.Fail -> None)
         in
-        match CCOpt.flat_map (mk_tree ~kind:Tree_open tree.t_entry) c' with
+        match Option.flat_map (mk_tree ~kind:Tree_open tree.t_entry) c' with
         | None -> ()
         | Some tree' ->
           Log.logf 5 (fun k->k "(@[resolution-yields@ %a@])" Clause.pp tree'.t_clause);
@@ -297,11 +297,12 @@ end = struct
 
   (* defer [tree] to some new or existing entry for subogal [t] *)
   let do_tabling ~undo (st:t) (tree:tree) (i:int) (t:Term.t) : unit =
+    let@ () = Tracing.with_ "do-tabling" in
     Log.logf 4 (fun k->k "(@[@{<yellow>do_tabling@}@ :term %a@])" Term.pp t);
     (* look if there's an existing entry for this subgoal *)
     begin match find_entry_for_goal ~undo st t with
       | Some entry ->
-        Log.logf 4 (fun k->k "(@[@{<yellow>defer_to_existing@}@ %a@])" (pp_iarray Term.pp) entry.e_goal);
+        Log.logf 4 (fun k->k "(@[@{<yellow>defer_to_existing@}@ %a@])" (pp_array Term.pp) entry.e_goal);
         Vec.push entry.e_listeners tree;
         tree.t_label <- L_defer {entry; goal=t; goal_idx=i; offset=0;};
         (* do resolution right now, in case [entry] has solutions *)
@@ -310,7 +311,7 @@ end = struct
         )
       | None ->
         Log.logf 4 (fun k->k "(@[@{<yellow>make_new_entry@}@])");
-        let ta = IArray.singleton t in
+        let ta = [| t |] in
         let c' = Clause.make ta ta |> Clause.rename in
         let entry = mk_entry ta in
         (* see if the original clause is not absurd *)
@@ -348,6 +349,7 @@ end = struct
 
   (* Label a single tree. We assume that the clause is simplified already. *)
   let process_tree (st:t) (tree:tree) : unit =
+    let@ () = Tracing.with_ "process-tree" in
     Log.logf 2 (fun k->k "(@[@{<yellow>process_tree@}@ :n-steps %d@ %a@])" st.n_steps pp_tree tree);
     let undo = Undo_stack.create() in
     begin match tree.t_kind, tree.t_label with
@@ -366,6 +368,7 @@ end = struct
 
   (* process tasks until we find a new solution *)
   let next_ (st:t) : Clause.t option * _ =
+    let@ () = Tracing.with_ "solver.next" in
     let n_sols0 = n_root_sols st in
     let old_steps = st.n_steps in
     while n_root_sols st = n_sols0 && has_task st do
@@ -384,29 +387,30 @@ end = struct
     res, st.n_steps - old_steps
 
   let sol_of_clause (s:t) (c:Clause.t) : Solution.t =
+    let@() = Tracing.with_ "solver.sol-of-clause" in
     let goal = s.root.e_goal in
-    let vars = Term.vars_seq (IArray.to_iter goal) in
+    let vars = Term.vars_iter (CCArray.to_iter goal) in
     let map =
       Undo_stack.with_ (fun undo ->
-        assert (IArray.length goal = IArray.length (Clause.concl c));
+        assert (Array.length goal = Array.length (Clause.concl c));
         try
-          IArray.iter2 (Unif.unify ~undo) goal (Clause.concl c);
+          Array.iter2 (Unif.unify ~undo) goal (Clause.concl c);
           Var.Set.to_iter vars
           |> Iter.map (fun v -> v, Term.deref_deep (Term.var v))
           |> Var.Map.of_iter
         with Unif.Fail -> assert false)
     in
-    {Solution.subst=map; constr=IArray.to_list @@ Clause.guard c}
+    {Solution.subst=map; constr=Array.to_list @@ Clause.guard c}
 
   (* convert a clause into a {!solution} *)
   let next_solution s : Solution.t option * _ =
     let r, n = next_ s in
-    CCOpt.map (sol_of_clause s) r, n
+    Option.map (sol_of_clause s) r, n
 
   (* make a new solver for the given goal *)
   let make ?(config=Config.default) (g:goal) : t =
     assert (g <> []);
-    let g = IArray.of_list g in
+    let g = Array.of_list g in
     let c = Clause.make g g in
     let entry = mk_entry g in
     let st = {
@@ -429,5 +433,4 @@ let solve ?config (g:goal) : Solution.t option * _ =
 (**/**)
 module Fmt = CCFormat
 module Util = Util
-module IArray = IArray
 (**/**)

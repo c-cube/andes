@@ -26,4 +26,5 @@
 (define-funs-rec ((num_10 () nat)) ((mult (s (s z)) num_5)))
 (define-funs-rec ((num_100 () nat)) ((mult num_10 num_10)))
 (assert-not
- (forall ((n_1 nat)) (not (leq (mult num_100 num_100) (fact n_1)))))(check-sat)
+ (forall ((n_1 nat)) (not (leq (mult num_100 num_100) (fact n_1)))))
+(check-sat)

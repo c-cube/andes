@@ -6,6 +6,7 @@
 open Andes
 module Util = Andes.Util
 module Loc = Tip_loc
+module Option = CCOpt
 
 type var = string
 
@@ -261,14 +262,14 @@ module Tip = struct
     let loc = A.loc st in
     match A.view st with
     | A.Stmt_decl_sort (s, 0) ->
-      ty_decl ?loc s |> CCOpt.return
+      ty_decl ?loc s |> Option.return
     | A.Stmt_decl_sort (_, _) ->
       tip_errorf ?loc "cannot handle polymorphic type@ %a" A.pp_stmt st
     | A.Stmt_decl fr ->
       let f, ty = conv_fun_decl ?loc fr in
-      decl ?loc f ty |> CCOpt.return
+      decl ?loc f ty |> Option.return
     | A.Stmt_assert t ->
-      assert_ ?loc (conv_term t) |> CCOpt.return
+      assert_ ?loc (conv_term t) |> Option.return
     | A.Stmt_data ([], l) ->
       let conv_data (s, cstors) =
         let cstors =
@@ -283,29 +284,29 @@ module Tip = struct
         s, cstors
       in
       let l = List.map conv_data l in
-      data ?loc l |> CCOpt.return
+      data ?loc l |> Option.return
     | A.Stmt_data (_::_, _) ->
       tip_errorf ?loc "cannot convert polymorphic data@ `@[%a@]`" A.pp_stmt st
     | A.Stmt_fun_def f ->
       let id, ty, t = conv_fun_def ?loc f.A.fr_decl f.A.fr_body in
-      def ~recursive:false ?loc [id, ty, t] |> CCOpt.return
+      def ~recursive:false ?loc [id, ty, t] |> Option.return
     | A.Stmt_fun_rec f ->
       let id, ty, t = conv_fun_def ?loc f.A.fr_decl f.A.fr_body in
-      def ~recursive:true ?loc [id, ty, t] |> CCOpt.return
+      def ~recursive:true ?loc [id, ty, t] |> Option.return
     | A.Stmt_funs_rec fsr ->
       let {A.fsr_decls=decls; fsr_bodies=bodies} = fsr in
       if List.length decls <> List.length bodies
       then tip_errorf ?loc "declarations and bodies should have same length";
       let l = List.map2 (conv_fun_def ?loc) decls bodies in
-      def ~recursive:true ?loc l |> CCOpt.return
+      def ~recursive:true ?loc l |> Option.return
     | A.Stmt_assert_not ([], t) ->
       let vars, t = open_forall (conv_term t) in
       let g = not_ t in (* negate *)
-      goal ?loc vars g |> CCOpt.return
+      goal ?loc vars g |> Option.return
     | A.Stmt_prove ([], t) ->
       let vars, t = open_forall (conv_term t) in
       let g = not_ t in (* negate *)
-      goal ?loc vars g |> CCOpt.return
+      goal ?loc vars g |> Option.return
     | A.Stmt_assert_not (_::_, _) | A.Stmt_prove _ ->
       tip_errorf ?loc "cannot convert polymorphic goal@ `@[%a@]`"
         A.pp_stmt st

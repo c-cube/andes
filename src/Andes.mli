@@ -44,5 +44,4 @@ val solve : ?config:Config.t -> goal -> Solution.t option * int
 (**/**)
 module Fmt = CCFormat
 module Util = Util
-module IArray = IArray
 (**/**)

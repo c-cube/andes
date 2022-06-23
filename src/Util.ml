@@ -1,12 +1,18 @@
 
 module Fmt = CCFormat
 module Vec = CCVector
+module Tracing = Catapult.Tracing
+module Option = CCOpt
 
-let pp_iarray pp_x out a =
-  Fmt.(iter ~sep:(return "@ ") @@ pp_x) out (IArray.to_iter a)
+let (let@) f x = f x
+
+let pp_array pp_x out a =
+  Fmt.(array ~sep:(return "@ ") @@ pp_x) out a
 
 let pp_list pp_x out l =
   Fmt.(list ~sep:(return "@ ") pp_x) out l
+
+let[@inline] array_is_empty a = Array.length a = 0
 
 exception Error of string
 
@@ -61,7 +67,7 @@ end = struct
       if Log.level()=0 then flush_();
       Printf.printf "[%.2f] " (Sys.time());
       Printf.kfprintf
-        (fun out -> if Log.level()>0 then output_char out '\n'; Pervasives.flush out) stdout fmt
+        (fun out -> if Log.level()>0 then output_char out '\n'; Stdlib.flush out) stdout fmt
     ) else Printf.ikfprintf (fun _ -> ()) stdout fmt
   let print s = printf "%s" s
 end

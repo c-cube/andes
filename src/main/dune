@@ -3,4 +3,4 @@
  (public_name andes)
  (modes native)
  (package andes)
- (libraries andes andes.tip))
+ (libraries andes andes.tip catapult catapult-file))

@@ -274,7 +274,7 @@ let compile_fun ?res_eq (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.
 (* how many calls to functions of [defs] in [rules]' bodies? *)
 let count_rec_calls defs rules : int =
   Iter.of_list rules
-  |> Iter.flat_map (fun r -> Rule.body r |> IArray.to_iter)
+  |> Iter.flat_map (fun r -> Rule.body r |> CCArray.to_iter)
   |> Iter.flat_map Term.subterms
   |> Iter.filter
     (fun t -> match Term.view t with

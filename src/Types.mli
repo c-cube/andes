@@ -65,7 +65,7 @@ module Term : sig
     | Var of Var.t
     | App of {
         f: Fun.t;
-        args: t IArray.t;
+        args: t array;
       }
     | Eqn of {
         sign: bool;
@@ -81,7 +81,7 @@ module Term : sig
   val pp : t CCFormat.printer
 
   val var : Var.t -> t
-  val app : Fun.t -> t IArray.t -> t
+  val app : Fun.t -> t array -> t
   val app_l : Fun.t -> t list -> t
   val const : Fun.t -> t
   val eq : t -> t -> t
@@ -89,7 +89,7 @@ module Term : sig
   val eqn : sign:bool -> t -> t -> t
 
   val subterms : t -> t Iter.t
-  val vars_seq : t Iter.t -> Var.Set.t
+  val vars_iter : t Iter.t -> Var.Set.t
   val vars : t -> Var.Set.t
 
   val is_var : t -> bool
@@ -99,24 +99,24 @@ module Term : sig
       current binding *)
 
   val rename : Renaming.t -> t -> t
-  val rename_arr : Renaming.t -> t IArray.t -> t IArray.t
+  val rename_arr : Renaming.t -> t array -> t array
 end
 
 (** {2 Generalized Clause} *)
 module Clause : sig
   type t = private {
-    concl: Term.t IArray.t; (* non empty *)
-    guard: Term.t IArray.t;
+    concl: Term.t array; (* non empty *)
+    guard: Term.t array;
   }
 
-  val concl : t -> Term.t IArray.t
-  val guard : t -> Term.t IArray.t
+  val concl : t -> Term.t array
+  val guard : t -> Term.t array
 
   val deref_deep : t -> t
   val rename : t -> t
 
   val equal : t -> t -> bool
-  val make : Term.t IArray.t -> Term.t IArray.t -> t
+  val make : Term.t array -> Term.t array -> t
   val pp : t CCFormat.printer
 end
 
@@ -129,9 +129,9 @@ module Rule : sig
       is used *)
 
   val concl: t -> Term.t
-  val body : t -> Term.t IArray.t
+  val body : t -> Term.t array
 
-  val make : Term.t -> Term.t IArray.t -> t
+  val make : Term.t -> Term.t array -> t
   (** [make concl body] makes a rule.
       @raise Util.Error if the conclusion is not a defined function application *)
 

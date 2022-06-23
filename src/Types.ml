@@ -29,14 +29,14 @@ and fun_kind =
     successfully applied. *)
 and rule = {
   mutable rule_concl: term;
-  mutable rule_body: term IArray.t;
+  mutable rule_body: term array;
 }
 
 and term_view =
   | Var of var
   | App of {
       f: fun_;
-      args: term IArray.t;
+      args: term array;
     }
   | Eqn of {
       sign: bool;
@@ -130,7 +130,7 @@ module Term = struct
     | Var of Var.t
     | App of {
         f: Fun.t;
-        args: t IArray.t;
+        args: t array;
       }
     | Eqn of {
         sign: bool;
@@ -152,7 +152,7 @@ module Term = struct
     | Var a, Var b -> Var.compare a b
     | App a, App b ->
       let c = Fun.compare a.f b.f in
-      if c<>0 then c else IArray.compare compare a.args b.args
+      if c<>0 then c else CCArray.compare compare a.args b.args
     | Eqn a, Eqn b ->
       compare a.lhs b.lhs
       <?> (compare, a.rhs, b.rhs)
@@ -165,16 +165,16 @@ module Term = struct
     match view a with
     | Var v -> CCHash.combine2 10 (Var.hash v)
     | App {f; args} ->
-      CCHash.combine3 20 (Fun.hash f) (CCHash.iter hash @@ IArray.to_iter args)
+      CCHash.combine3 20 (Fun.hash f) (CCHash.iter hash @@ CCArray.to_iter args)
     | Eqn { sign; lhs; rhs } ->
       CCHash.combine4 30 (CCHash.bool sign) (hash lhs) (hash rhs)
 
   let rec pp out a : unit =
     match view a with
     | Var v -> Var.pp out v
-    | App {f; args} when IArray.is_empty args -> Fun.pp out f
+    | App {f; args=[||]} -> Fun.pp out f
     | App {f; args} ->
-      Format.fprintf out "(@[%a@ %a@])" Fun.pp f (pp_iarray pp) args
+      Format.fprintf out "(@[%a@ %a@])" Fun.pp f (pp_array pp) args
     | Eqn {sign;lhs;rhs} ->
       Format.fprintf out "(@[<hv>%s@ %a@ %a@])"
         (if sign then "=" else "!=") pp lhs pp rhs
@@ -186,14 +186,14 @@ module Term = struct
   let var v : t = mk_ @@ Var v
 
   let app f args : t =
-    if Fun.arity f <> IArray.length args then (
+    if Fun.arity f <> Array.length args then (
       Util.errorf "cannot apply %a (arity %d)@ to [@[%a@]]"
-        Fun.pp f (Fun.arity f) (Util.pp_iarray pp) args
+        Fun.pp f (Fun.arity f) (Util.pp_array pp) args
     );
     mk_ @@ App {f;args}
 
-  let app_l f args : t = app f (IArray.of_list args)
-  let const f : t = app f IArray.empty
+  let app_l f args : t = app f (Array.of_list args)
+  let const f : t = app f [||]
   let eqn ~sign lhs rhs = mk_ @@ Eqn {lhs; rhs; sign}
   let eq a b : t = eqn ~sign:true a b
   let neq a b : t = eqn ~sign:false a b
@@ -211,7 +211,7 @@ module Term = struct
       yield t;
       match view t with
       | Var _ -> ()
-      | App {args;_} -> IArray.iter aux args
+      | App {args;_} -> Array.iter aux args
       | Eqn {lhs;rhs;_} -> aux lhs; aux rhs
     in
     aux t
@@ -224,8 +224,8 @@ module Term = struct
          | _ -> None)
     |> Var.Set.of_iter
 
-  let vars_seq (seq:t Iter.t) : Var.Set.t =
-    seq
+  let vars_iter (it:t Iter.t) : Var.Set.t =
+    it
     |> Iter.flat_map subterms
     |> vars_of_seq_
 
@@ -236,8 +236,8 @@ module Term = struct
     | Var {v_binding=Some u;_} -> deref_deep u
     | Var _ -> t
     | App {f; args} ->
-      let args' = IArray.map deref_deep args in
-      if IArray.equal (==) args args' then t else app f args'
+      let args' = Array.map deref_deep args in
+      if CCArray.equal (==) args args' then t else app f args'
     | Eqn {sign;lhs;rhs} ->
       let lhs' = deref_deep lhs in
       let rhs' = deref_deep rhs in
@@ -255,8 +255,8 @@ module Term = struct
         v.v_binding <- Some u;
         u
       | App {f; args} ->
-        let args' = IArray.map aux args in
-        if IArray.equal (==) args args' then t else app f args'
+        let args' = Array.map aux args in
+        if CCArray.equal (==) args args' then t else app f args'
       | Eqn {sign; lhs; rhs} ->
         let lhs' = aux lhs in
         let rhs' = aux rhs in
@@ -264,21 +264,21 @@ module Term = struct
         else eqn ~sign lhs' rhs'
     in aux t
 
-  let rename_arr r = IArray.map (rename r)
+  let rename_arr r = Array.map (rename r)
 end
 
 module Clause = struct
   type t = {
-    concl: Term.t IArray.t; (* non empty *)
-    guard: Term.t IArray.t;
+    concl: Term.t array; (* non empty *)
+    guard: Term.t array;
   }
 
   let[@inline] concl c = c.concl
   let[@inline] guard c = c.guard
 
   let map f c =
-    {concl=IArray.map f c.concl;
-     guard=IArray.map f c.guard;
+    {concl=Array.map f c.concl;
+     guard=Array.map f c.guard;
     }
 
   let rename c =
@@ -287,16 +287,16 @@ module Clause = struct
   let deref_deep c = map Term.deref_deep c
 
   let[@inline] equal a b : bool =
-    IArray.equal Term.equal a.concl b.concl &&
-    IArray.equal Term.equal a.guard b.guard
+    CCArray.equal Term.equal a.concl b.concl &&
+    CCArray.equal Term.equal a.guard b.guard
 
   let[@inline] make a b : t = {concl=a; guard=b}
 
   let pp out (c:t) =
     let pp_iarray_b out a =
-      if IArray.is_empty a then Fmt.string out "()"
-      else if IArray.length a =1 then Term.pp out (IArray.get a 0)
-      else Fmt.fprintf out "(@[<hv>%a@])" (pp_iarray Term.pp) a
+      if a  = [||] then Fmt.string out "()"
+      else if Array.length a =1 then Term.pp out (Array.get a 0)
+      else Fmt.fprintf out "(@[<hv>%a@])" (pp_array Term.pp) a
     in
     Fmt.fprintf out "(@[%a@ <- %a@])" pp_iarray_b c.concl pp_iarray_b c.guard
 end
@@ -307,9 +307,9 @@ module Rule = struct
   let concl r = r.rule_concl
   let body r = r.rule_body
   let equal a b : bool =
-    Term.equal (concl a) (concl b) && IArray.equal Term.equal (body a) (body b)
+    Term.equal (concl a) (concl b) && CCArray.equal Term.equal (body a) (body b)
 
-  let to_clause r = Clause.make (IArray.singleton @@ concl r) (body r)
+  let to_clause r = Clause.make [| concl r |] (body r)
   let head r = match Term.view @@ concl r with
     | Term.App {f; _} -> f
     | _ -> Util.errorf "rule.head"
@@ -330,12 +330,12 @@ module Rule = struct
     rename_in_place r;
     r
 
-  let make_l concl body = make concl (IArray.of_list body)
+  let make_l concl body = make concl (Array.of_list body)
 
   let pp out (r:t) =
     let pp_body out b =
-      if IArray.is_empty b then Fmt.fprintf out "."
-      else Fmt.fprintf out " :-@ %a." (pp_iarray Term.pp) b
+      if array_is_empty b then Fmt.fprintf out "."
+      else Fmt.fprintf out " :-@ %a." (pp_array Term.pp) b
     in
     Format.fprintf out "(@[<hv>%a%a@])" Term.pp (concl r) pp_body (body r)
 
@@ -417,7 +417,7 @@ module Unif = struct
       let t = Term.deref t in
       match Term.view t with
       | Var v' -> Var.equal v v'
-      | App {args; f=_} -> IArray.exists aux args
+      | App {args; f=_} -> Array.exists aux args
       | Eqn {lhs; rhs; sign=_} -> aux lhs || aux rhs
     in aux t
 
@@ -435,8 +435,8 @@ module Unif = struct
         if occurs_check v a then raise Fail;
         Undo_stack.push_bind undo v a
       | App r1, App r2
-        when Fun.equal r1.f r2.f && IArray.length r1.args = IArray.length r2.args ->
-        IArray.iter2 aux r1.args r2.args
+        when Fun.equal r1.f r2.f && Array.length r1.args = Array.length r2.args ->
+        Array.iter2 aux r1.args r2.args
       | Eqn r1, Eqn r2 when r1.sign = r2.sign ->
         aux r1.lhs r2.lhs;
         aux r1.rhs r2.rhs;
