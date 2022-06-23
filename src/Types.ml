@@ -128,6 +128,32 @@ module Renaming = struct
       raise e
 end
 
+
+let rec pp_term_ out a : unit =
+  match a.t_view with
+  | Var v -> Var.pp out v
+  | App {f; args=[||]} -> Fun.pp out f
+  | App {f; args} ->
+    Format.fprintf out "(@[%a@ %a@])" Fun.pp f (pp_array pp_term_) args
+  | Eqn {sign;lhs;rhs} ->
+    Format.fprintf out "(@[<hv>%s@ %a@ %a@])"
+      (if sign then "=" else "!=") pp_term_ lhs pp_term_ rhs
+
+module Subst = struct
+  module M = Var.Map
+  type t = term M.t
+
+  let empty = M.empty
+  let add self v t = M.add v t self
+  let get self v = M.find_opt v self
+  let mem self v = M.mem v self
+  let to_iter = M.to_iter
+  let pp out (self:t) =
+    let pp_pair out (v,t) = Fmt.fprintf out "@ (@[%a %a@])" Var.pp v pp_term_ t in
+    Fmt.fprintf out "(@[subst%a@])"
+    (pp_iter pp_pair) (to_iter self)
+end
+
 module Term = struct
   type t = term
 
@@ -187,15 +213,7 @@ module Term = struct
         CCHash.combine4 30 (CCHash.bool sign) (hash lhs) (hash rhs)
   end)
 
-  let rec pp out a : unit =
-    match view a with
-    | Var v -> Var.pp out v
-    | App {f; args=[||]} -> Fun.pp out f
-    | App {f; args} ->
-      Format.fprintf out "(@[%a@ %a@])" Fun.pp f (pp_array pp) args
-    | Eqn {sign;lhs;rhs} ->
-      Format.fprintf out "(@[<hv>%s@ %a@ %a@])"
-        (if sign then "=" else "!=") pp lhs pp rhs
+  let pp = pp_term_
 
   let tbl_ = H.create()
 
@@ -235,11 +253,26 @@ module Term = struct
   let neq a b : t = eqn ~sign:false a b
 
   let is_var t = match view t with Var _ -> true | _ -> false
+  let as_var_exn t = match view t with Var v -> v | _ -> assert false
 
   let[@unroll 2] rec deref (t:t) : t =
     match view t with
     | Var {v_binding=Some u;_} -> deref u
     | _ -> t
+
+  (* shallow deref *)
+  let deref_var subst (t:term) : term =
+    let rec aux t =
+      if is_ground t then t (* shortcut *)
+      else
+        match view t with
+        | Var v ->
+            begin match Subst.get subst v with
+            | None -> t
+            | Some u -> aux u
+            end
+        | App _ | Eqn _ -> t
+    in aux t
 
   let subterms ?(tbl=Tbl.create 8) ?(enter=fun _ -> true) t yield : unit =
     let rec aux t =
@@ -257,7 +290,15 @@ module Term = struct
     in
     aux t
 
-  let vars_of_iter_ it =
+  let contains_var ?tbl v t : bool =
+    subterms t ?tbl ~enter:(fun t -> not (is_ground t))
+    |> Iter.exists
+    (fun t ->
+      match view t with
+      | Var u -> Var.equal v u
+      | _ -> false)
+
+  let vars_of_iter_ it : Var.Set.t =
     it
     |> Iter.filter_map
       (fun t -> match view t with
@@ -310,6 +351,14 @@ module Term = struct
         | Var {v_binding=Some u;_} -> Some u
         | _ -> None)
 
+  (* apply substitution *)
+  let apply_subst ?cache subst t =
+    map_top_down_ ?cache ~recursive:true t
+     ~enter:(fun t -> not (is_ground t))
+     ~f:(fun t -> match view t with
+        | Var v -> Subst.get subst v
+        | _ -> None)
+
   let rename ?cache (ren:Renaming.t) (t: term) : term =
     map_top_down_ ?cache ~recursive:false t
       ~enter:(fun t -> not (is_ground t))
@@ -343,6 +392,9 @@ module Clause = struct
     {concl=Array.map f c.concl;
      guard=Array.map f c.guard;
     }
+
+  let apply_subst ?(cache=Term.Tbl.create 8) subst self =
+    map (Term.apply_subst ~cache subst) self
 
   let rename ?(cache=Term.Tbl.create 8) c =
     Renaming.with_ (fun ren -> map (Term.rename ~cache ren) c)
@@ -425,21 +477,6 @@ module Rule = struct
     | _ -> assert false
 end
 
-module Subst = struct
-  module M = Var.Map
-  type t = Term.t M.t
-
-  let empty = M.empty
-  let add self v t = M.add v t self
-  let get self v = M.find_opt v self
-  let mem self v = M.mem v self
-  let to_iter = M.to_iter
-  let pp out (self:t) =
-    let pp_pair out (v,t) = Fmt.fprintf out "@ (@[%a %a@])" Var.pp v Term.pp t in
-    Fmt.fprintf out "(@[subst%a@])"
-    (pp_iter pp_pair) (to_iter self)
-end
-
 module Unif = struct
   exception Fail
 
@@ -451,24 +488,10 @@ module Unif = struct
     let hash = CCHash.pair Term.hash Term.hash
   end)
 
-  (* shallow deref *)
-  let deref subst (t:term) : term =
-    let rec aux t =
-      if Term.is_ground t then t (* shortcut *)
-      else
-        match Term.view t with
-        | Var v ->
-            begin match Subst.get subst v with
-            | None -> t
-            | Some u -> aux u
-            end
-        | App _ | Eqn _ -> t
-    in aux t
-
   let occurs_check subst v t : bool =
     assert (v.v_binding = None);
     let rec aux t =
-      let t = deref subst t in
+      let t = Term.deref_var subst t in
       if Term.is_ground t then false (* shortcut *)
       else
         match Term.view t with
@@ -478,12 +501,14 @@ module Unif = struct
         | Eqn {lhs; rhs; sign=_} -> aux lhs || aux rhs
     in aux t
 
+  let[@inline] can_bind subst v t = not (occurs_check subst v t)
+
   let unif_ op subst a b : Subst.t =
     let tbl = Tbl2.create 8 in
     let subst = ref subst in
     let rec aux a b =
-      let a = deref !subst a in
-      let b = deref !subst b in
+      let a = Term.deref_var !subst a in
+      let b = Term.deref_var !subst b in
       if Tbl2.mem tbl (a,b) then ()
       else (
         Tbl2.add tbl (a,b) (); (* unify pair [a,b] once per pair at most *)

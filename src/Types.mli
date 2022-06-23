@@ -60,8 +60,21 @@ module Renaming : sig
   val with_ : (t -> 'a) -> 'a
 end
 
-module Term : sig
+type term
+
+(** Substitutions *)
+module Subst : sig
   type t
+  val empty : t
+  val add : t -> Var.t -> term -> t
+  val mem : t -> Var.t -> bool
+  val get : t -> Var.t -> term option
+  val to_iter : t -> (Var.t * term) Iter.t
+  val pp : t Fmt.printer
+end
+
+module Term : sig
+  type t = term
 
   type view =
     | Var of Var.t
@@ -93,15 +106,23 @@ module Term : sig
   val neq : t -> t -> t
   val eqn : sign:bool -> t -> t -> t
 
+  val deref_var : Subst.t -> t -> t
+  (** If [t] is a variable bound in [subst], replace it, and recursively.
+      Otherwise return [t]. *)
+
   val is_ground : t -> bool
   val subterms : ?tbl:unit Tbl.t -> ?enter:(t->bool) -> t -> t Iter.t
+  val contains_var : ?tbl:unit Tbl.t -> Var.t -> t -> bool
   val vars_iter : ?tbl:unit Tbl.t -> t Iter.t -> Var.Set.t
   val vars : ?tbl:unit Tbl.t -> t -> Var.Set.t
 
   val is_var : t -> bool
+  val as_var_exn : t -> Var.t
 
   val rename : ?cache:t Tbl.t -> Renaming.t -> t -> t
   val rename_arr : ?cache:t Tbl.t -> Renaming.t -> t array -> t array
+
+  val apply_subst : ?cache:t Tbl.t -> Subst.t -> t -> t
 end
 
 (** {2 Generalized Clause} *)
@@ -114,8 +135,9 @@ module Clause : sig
   val concl : t -> Term.t array
   val guard : t -> Term.t array
 
-  val deref_deep : ?cache:Term.t Term.Tbl.t -> t -> t
   val rename : ?cache:Term.t Term.Tbl.t -> t -> t
+
+  val apply_subst : ?cache:Term.t Term.Tbl.t -> Subst.t -> t -> t
 
   val equal : t -> t -> bool
   val make : Term.t array -> Term.t array -> t
@@ -152,20 +174,11 @@ module Rule : sig
   val pp : t CCFormat.printer
 end
 
-(** Substitutions *)
-module Subst : sig
-  type t
-  val empty : t
-  val add : t -> Var.t -> Term.t -> t
-  val mem : t -> Var.t -> bool
-  val get : t -> Var.t -> Term.t option
-  val to_iter : t -> (Var.t * Term.t) Iter.t
-  val pp : t Fmt.printer
-end
-
 (** {2 Unification of terms} *)
 module Unif : sig
   exception Fail
+
+  val can_bind : Subst.t -> Var.t -> Term.t -> bool
 
   val unify : Subst.t -> Term.t -> Term.t -> Subst.t
   (** [unify t1 t2] returns [()] in case of success (binding variables

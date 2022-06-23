@@ -107,30 +107,7 @@ let[@inline] goal st : Term.t list = st.goal
 
 let unimplemented s = Util.errorf "not implemented: compile %s" s
 
-(** {2 Functional Substitutions}
-    Mostly useful for preprocessing *)
-module Subst : sig
-  type t = Term.t Var.Map.t
-
-  val empty : t
-  val mem : Var.t -> t -> bool
-  val add : Var.t -> Term.t -> t -> t
-
-  val apply : t -> Term.t -> Term.t
-end = struct
-  module M = Var.Map
-  type t = Term.t Var.Map.t
-  let mem = M.mem
-  let empty = M.empty
-  let add v t m = M.add v t m
-
-  let apply s (t:Term.t) : Term.t =
-    let undo = Types.Undo_stack.create () in
-    Types.Undo_stack.with_ undo
-      (fun () ->
-         M.iter (fun v t -> Types.Undo_stack.push_bind undo v t) s;
-         Term.deref_deep t)
-end
+module Subst = Types.Subst
 
 module M_state = struct
   type t = {
@@ -139,11 +116,11 @@ module M_state = struct
   }
   let empty = {subst=Subst.empty; guards=[]}
   let add_guard t m = {m with guards=t::m.guards}
-  let add_subst v t m = {m with subst = Subst.add v t m.subst}
+  let add_subst v t m = {m with subst = Subst.add m.subst v t}
 
   let add_eq t u m =
     match Term.view t with
-    | Term.Var x when not @@ Subst.mem x m.subst -> add_subst x u m
+    | Term.Var x when not @@ Subst.mem m.subst x -> add_subst x u m
     | _ -> add_guard (Term.eq t u) m
 end
 
@@ -257,9 +234,9 @@ let compile_fun ?res_eq (st:t) (f:Fun.t) (vars:A.var list) (body:A.term) : Rule.
     |> CCList.filter_map
       (fun (res,{M_state.subst;guards}) ->
          (* produce a rule *)
-         let args = List.map (Subst.apply subst) @@ (List.map Term.var t_vars @ [res]) in
+         let args = List.map (Term.apply_subst subst) @@ (List.map Term.var t_vars @ [res]) in
          let concl = Term.app_l f args in
-         let guards = List.map (Subst.apply subst) guards in
+         let guards = List.map (Term.apply_subst subst) guards in
          let constr_res_eq = match res_eq with
            | None -> None
            | Some t -> Some (Term.eq t res)

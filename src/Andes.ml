@@ -151,18 +151,16 @@ end = struct
   (* find if some other entry subsumes this goal exactly
      TODO: goal with multiple terms?
      TODO: indexing to make this fast *)
-  let find_entry_for_goal ~undo (st:t) (goal:Term.t) : tbl_entry option =
+  let find_entry_for_goal (st:t) (goal:Term.t) : (tbl_entry * Subst.t) option =
     Vec.to_iter st.tbl
     |> Iter.find_map
       (fun entry ->
          (* use [entry] iff it matches [goal] *)
          let goal_entry = entry.e_goal in
          if Array.length goal_entry = 1 then (
-           Undo_stack.with_ undo (fun () ->
-             try
-               Unif.match_ ~undo (Array.get goal_entry 0) goal;
-               Some entry
-             with Unif.Fail -> None)
+           match Unif.match_ Subst.empty (Array.get goal_entry 0) goal with
+           | s -> Some (entry,s)
+           | exception Unif.Fail -> None
          ) else None)
 
   (* choice of which rule to use for a tree:
@@ -216,7 +214,7 @@ end = struct
     )
 
   (* perform resolution *)
-  let do_resolution ~undo:_ (st:t) (tree:tree) (i:int) f (rules:_ list) (t:Term.t) : unit =
+  let do_resolution (st:t) (tree:tree) (i:int) f (rules:_ list) (t:Term.t) : unit =
     let c = tree.t_clause in
     Log.logf 4 (fun k->k "(@[@{<yellow>do_resolution@}@ :term %a@])" Term.pp t);
     let guard =
@@ -225,22 +223,19 @@ end = struct
         (fun j -> if j<i then Array.get a j else Array.get a (j+1))
     in
     tree.t_label <- L_program {term=t; fun_=f};
-    let undo = Undo_stack.create() in
     List.iter
       (fun r ->
          Log.logf 5 (fun k->k "(@[do_resolution.step@ :rule %a@ :term %a@])" Rule.pp r Term.pp t);
          let c' =
-           Undo_stack.with_ undo
-             (fun () ->
-                try
-                  Unif.unify ~undo t (Rule.concl r);
-                  let c' =
-                    Clause.make c.Clause.concl (Array.append guard @@ Rule.body r)
-                    |> Clause.deref_deep
-                    |> Clause.rename
-                  in
-                  Some c'
-                with Unif.Fail -> None)
+           match Unif.unify Subst.empty t (Rule.concl r) with
+           | subst ->
+             let c' =
+               Clause.make c.Clause.concl (Array.append guard @@ Rule.body r)
+               |> Clause.apply_subst subst
+               |> Clause.rename
+             in
+             Some c'
+           | exception Unif.Fail -> None
          in
          match Option.flat_map (mk_tree ~kind:Tree_open tree.t_entry) c' with
          | None -> ()
@@ -252,7 +247,7 @@ end = struct
 
   (* [tree] defers to another entry, see if some resolutions now apply,
      and fast-forward offset *)
-  let fast_forward_resolution ~undo (st:t) (tree:tree) : unit =
+  let fast_forward_resolution (st:t) (tree:tree) : unit =
     let c = tree.t_clause in
     match tree.t_label with
     | L_defer defer ->
@@ -273,16 +268,15 @@ end = struct
         let c' =
           if Array.length sol.Clause.concl <> 1 then None
           else
-            Undo_stack.with_ undo (fun () ->
-               try
-                 Unif.unify ~undo defer.goal (Array.get sol.Clause.concl 0);
-                 let c' =
-                   Clause.make c.Clause.concl (Array.append guard_c @@ sol.Clause.guard)
-                   |> Clause.deref_deep
-                   |> Clause.rename
-                 in
-                 Some c'
-               with Unif.Fail -> None)
+            match Unif.unify Subst.empty defer.goal (Array.get sol.Clause.concl 0) with
+            | subst ->
+              let c' =
+                Clause.make c.Clause.concl (Array.append guard_c @@ sol.Clause.guard)
+                |> Clause.apply_subst subst
+                |> Clause.rename
+              in
+              Some c'
+            | exception Unif.Fail -> None
         in
         match Option.flat_map (mk_tree ~kind:Tree_open tree.t_entry) c' with
         | None -> ()
@@ -294,18 +288,18 @@ end = struct
     | _ -> assert false
 
   (* defer [tree] to some new or existing entry for subogal [t] *)
-  let do_tabling ~undo (st:t) (tree:tree) (i:int) (t:Term.t) : unit =
+  let do_tabling (st:t) (tree:tree) (i:int) (t:Term.t) : unit =
     let@ () = Tracing.with_ "do-tabling" in
     Log.logf 4 (fun k->k "(@[@{<yellow>do_tabling@}@ :term %a@])" Term.pp t);
     (* look if there's an existing entry for this subgoal *)
-    begin match find_entry_for_goal ~undo st t with
-      | Some entry ->
+    begin match find_entry_for_goal st t with
+      | Some (entry,_subst) ->
         Log.logf 4 (fun k->k "(@[@{<yellow>defer_to_existing@}@ %a@])" (pp_array Term.pp) entry.e_goal);
         Vec.push entry.e_listeners tree;
         tree.t_label <- L_defer {entry; goal=t; goal_idx=i; offset=0;};
         (* do resolution right now, in case [entry] has solutions *)
         if not @@ Vec.is_empty entry.e_solutions then (
-          fast_forward_resolution ~undo st tree;
+          fast_forward_resolution st tree;
         )
       | None ->
         Log.logf 4 (fun k->k "(@[@{<yellow>make_new_entry@}@])");
@@ -327,7 +321,7 @@ end = struct
         end;
     end
 
-  let apply_rule ~undo (st:t) (tree:tree) (ra:rule_to_apply) : unit =
+  let apply_rule (st:t) (tree:tree) (ra:rule_to_apply) : unit =
     assert (tree.t_label = L_none);
     begin match ra with
       | RA_dead -> tree.t_kind <- Tree_dead
@@ -340,27 +334,26 @@ end = struct
         Vec.iter (push_task st) tree.t_entry.e_listeners;
         ()
       | RA_resolution (i,f,rules,t) ->
-        do_resolution ~undo st tree i f rules t
+        do_resolution st tree i f rules t
       | RA_tabling (i,t) ->
-        do_tabling ~undo st tree i t
+        do_tabling st tree i t
     end
 
   (* Label a single tree. We assume that the clause is simplified already. *)
   let process_tree (st:t) (tree:tree) : unit =
     let@ () = Tracing.with_ "process-tree" in
     Log.logf 2 (fun k->k "(@[@{<yellow>process_tree@}@ :n-steps %d@ %a@])" st.n_steps pp_tree tree);
-    let undo = Undo_stack.create() in
     begin match tree.t_kind, tree.t_label with
       | Tree_dead, _ -> ()
       | Tree_open, L_none ->
         let rule = find_rule_to_apply ~at_root:false st tree in
-        apply_rule ~undo st tree rule
+        apply_rule st tree rule
       | Tree_root, L_none ->
         let rule = find_rule_to_apply ~at_root:true st tree in
-        apply_rule ~undo st tree rule
+        apply_rule st tree rule
       | _, L_defer _ ->
         (* defer to another entry which got new solutions *)
-        fast_forward_resolution ~undo st tree
+        fast_forward_resolution st tree
       | _, (L_program _ | L_solution) -> assert false (* should not process again *)
     end
 
@@ -392,15 +385,13 @@ end = struct
     let goal = s.root.e_goal in
     let vars = Term.vars_iter (CCArray.to_iter goal) in
     let map =
-      let undo = Undo_stack.create () in
-      Undo_stack.with_ undo (fun () ->
-        assert (Array.length goal = Array.length (Clause.concl c));
-        try
-          Array.iter2 (Unif.unify ~undo) goal (Clause.concl c);
-          Var.Set.to_iter vars
-          |> Iter.map (fun v -> v, Term.deref_deep (Term.var v))
-          |> Var.Map.of_iter
-        with Unif.Fail -> assert false)
+      assert (Array.length goal = Array.length (Clause.concl c));
+      try
+        let subst = CCArray.fold2 Unif.unify Subst.empty goal (Clause.concl c) in
+        Var.Set.to_iter vars
+        |> Iter.map (fun v -> v, Term.apply_subst subst (Term.var v))
+        |> Var.Map.of_iter
+      with Unif.Fail -> assert false
     in
     {Solution.subst=map; constr=Array.to_list @@ Clause.guard c}
 

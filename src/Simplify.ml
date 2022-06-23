@@ -12,27 +12,42 @@ exception Simp_absurd
    - or, for constraints, the conjunction of constraints is SAT
 *)
 let simplify_ (c:Clause.t) : Clause.t option =
-  (* used locally to try and unify terms *)
-  let undo = Undo_stack.create() in
-  let concl = ref c.Clause.concl in
   let to_process = Vec.of_array c.Clause.guard in
   let new_guard = Vec.create () in
 
+  let subst = ref Subst.empty in
+
   let pp_state out () =
-    Fmt.fprintf out "(@[:to_process (@[%a@])@ :new_guard (@[%a@])@])"
-      (Vec.pp Term.pp) to_process (Vec.pp Term.pp) new_guard
+    Fmt.fprintf out "(@[:to_process (@[%a@])@ :new_guard (@[%a@])@ :subst %a@])"
+      (Vec.pp Term.pp) to_process (Vec.pp Term.pp) new_guard Subst.pp !subst
   in
 
-  (* after some variable has been bound, re-simplify
+  let reprocess_if_contains v =
+    let tbl = Term.Tbl.create 8 in
+    Vec.filter_in_place
+      (fun t ->
+        if Term.contains_var ~tbl v t then (
+          (* [t] is modified by the binding of [v] *)
+          Vec.push to_process t;
+          false
+        ) else true)
+      new_guard;
+  in
+
+  let absurd (t:Term.t) : 'a =
+    Log.logf 5 (fun k->k "(@[simplify.is_absurd@ %a@])" Term.pp t);
+    raise_notrace Simp_absurd
+  in
+
+  (* after some variables has been bound, re-simplify
      terms that can be simplified *)
   let restart () : unit =
     let@() = Tracing.with_ "restart" in
     Log.log 5 "(simplify.restart)";
-    concl := Array.map Term.deref_deep !concl;
-    Vec.iteri (fun i t -> Vec.set to_process i (Term.deref_deep t)) to_process;
+    (* check if some processed terms need to be re-processed *)
     Vec.filter_in_place
       (fun t ->
-         let t' = Term.deref_deep t in
+         let t' = Term.apply_subst !subst t in
          if Term.equal t t' then true
          else (
            Vec.push to_process t';
@@ -42,10 +57,7 @@ let simplify_ (c:Clause.t) : Clause.t option =
     Log.logf 10 (fun k->k "(@[simplify.restart@ :yields %a@])" pp_state());
   in
 
-  let absurd (t:Term.t) : 'a =
-    Log.logf 5 (fun k->k "(@[simplify.is_absurd@ %a@])" Term.pp t);
-    raise_notrace Simp_absurd
-  in
+  let need_restart = ref false in
 
   (* simplify given term, pushing it to [new_guard] if not simplifiable,
      or pushing new terms to simplify to [to_process].
@@ -53,37 +65,41 @@ let simplify_ (c:Clause.t) : Clause.t option =
   let simp_t (t:Term.t) : unit =
     match Term.view t with
     | Term.Var _ -> assert false (* not at toplevel *)
-    | Term.Eqn {sign=true; lhs; rhs} when Term.is_var lhs || Term.is_var rhs ->
-      (* FIXME: should we simplify even for non-vars? *)
-      (* [x=t] replaces [x] with [t] everywhere, of fails by occur check.
-         if binding succeeds, need to re-simplify again *)
-      Undo_stack.with_ undo (fun () ->
-        match Unif.unify ~undo lhs rhs with
-        | () ->
-          (* drop the term, now true by unif *)
-          Log.logf 5 (fun k->k "(@[simplify.eq-res@ %a@])" Term.pp t);
-          restart();
-        | exception Unif.Fail ->
-          absurd t)
+    | Term.Eqn {sign=true; lhs; rhs} ->
+
+      let lhs = Term.deref_var !subst lhs in
+      let rhs = Term.deref_var !subst rhs in
+
+      (match Term.view lhs, Term.view rhs with
+      | Var v, _ when Unif.can_bind !subst v rhs ->
+        Log.logf 5 (fun k->k "(@[simplify.eq-res@ %a@])" Term.pp t);
+        subst := Subst.add !subst v rhs;
+        reprocess_if_contains v
+
+      | _, Var v when Unif.can_bind !subst v lhs ->
+        Log.logf 5 (fun k->k "(@[simplify.eq-res@ %a@])" Term.pp t);
+        subst := Subst.add !subst v lhs;
+        reprocess_if_contains v
+      | _ ->
+        (* check that [lhs] and [rhs] are unifiable, if yes keep them.
+           otherwise, keep the equation, but don't keep the unifier. *)
+        (match Unif.unify !subst lhs rhs with
+        | _ -> Vec.push new_guard t
+        | exception Unif.Fail -> absurd t)
+      )
+
     | Term.Eqn {sign=false; lhs; rhs} when Term.equal lhs rhs ->
       absurd t (* [t!=t] absurd *)
-    | Term.Eqn {sign=false; lhs; rhs} ->
-      Undo_stack.with_ undo (fun () ->
-        match Unif.unify ~undo lhs rhs with
-        | () ->
-          Vec.push new_guard t (* keep *)
-        | exception Unif.Fail ->
-          (* never equal, drop *)
-          Log.logf 5 (fun k->k "(@[simplify.trivial-neq@ %a@])" Term.pp t);
-      )
-    | Term.Eqn {sign=true; lhs; rhs} ->
-      (* check that [lhs] and [rhs] are unifiable, if yes keep them.
-         otherwise, keep the equation, but don't keep the unifier. *)
-      Undo_stack.with_ undo (fun () ->
-        try Unif.unify ~undo lhs rhs
-        with Unif.Fail -> absurd t);
 
-      Vec.push new_guard t
+    | Term.Eqn {sign=false; lhs; rhs} ->
+
+      (match Unif.unify !subst lhs rhs with
+      | _ ->
+        Vec.push new_guard t (* keep *)
+      | exception Unif.Fail ->
+          (* never equal, drop trivial constraint *)
+        Log.logf 5 (fun k->k "(@[simplify.trivial-neq@ %a@])" Term.pp t);
+      )
 
     | Term.App {f; _} ->
       begin match Fun.kind f with
@@ -91,52 +107,58 @@ let simplify_ (c:Clause.t) : Clause.t option =
         | Fun.F_defined {rules=[]; _} -> Vec.push new_guard t (* not defined yet *)
         | Fun.F_defined {rules; _} ->
           (* try to apply the rules, and simplify if zero or one apply *)
-          let n_success = ref 0 in
           begin match
               CCList.filter_map
                 (fun r ->
-                   Undo_stack.with_ undo
-                     (fun () ->
-                        try
-                          (* keep rule if its conclusion unifies with [t] *)
-                          Unif.unify ~undo (Rule.concl r) t;
-                          if !n_success > 0 then raise_notrace Several_rules;
-                          incr n_success;
-                          Some r
-                        with Unif.Fail -> None))
+                  (* keep rule if its conclusion unifies with [t] *)
+                  match Unif.unify !subst (Rule.concl r) t with
+                  | subst -> Some (r, subst)
+                  | exception Unif.Fail -> None)
                 rules
             with
             | [] -> absurd t
-            | [rule] ->
+            | [rule, subst'] ->
               (* exactly one rule applies, so resolve with its unconditionally *)
               Log.logf 5 (fun k->k "(@[simplify.uniq-rule@ :goal %a@ :rule %a@])"
                   Term.pp t Rule.pp rule);
-              Undo_stack.with_ undo (fun () ->
-                Unif.unify ~undo (Rule.concl rule) t;
-                (* add body of rule to the literals to process *)
-                Array.iter
-                  (fun t -> Vec.push to_process (Term.deref_deep t))
-                  (Rule.body rule);
-                restart());
+
+              subst := subst';
+
+              (* add body of rule to the literals to process *)
+              Array.iter
+                (Vec.push to_process)
+                (Rule.body rule);
+
+              need_restart := true;
+
               Rule.rename_in_place rule; (* consume rule's current version *)
-            | exception Several_rules ->
+
+            | _::_::_ ->
                 (* several rules, don't simplify.
                    Will be dealt with in {!Andes}. *)
               Vec.push new_guard t
-            | _::_::_ -> assert false
           end
       end
   in
   (* simplification fixpoint *)
   try
     while not @@ Vec.is_empty to_process do
-      let t = Vec.pop_exn to_process in
-      Log.logf 5 (fun k->k "(@[simplify.process@ %a@])" Term.pp t);
-      simp_t t
+      while not @@ Vec.is_empty to_process do
+        let t = Vec.pop_exn to_process in
+        Log.logf 5 (fun k->k "(@[simplify.process@ %a@])" Term.pp t);
+        simp_t t
+      done;
+
+      if !need_restart then (
+        need_restart := false;
+        restart(); (* might push things back into [to_process] *)
+      )
     done;
 
     let c' =
-      Clause.make !concl (Vec.to_array new_guard)
+      (* change guard, apply whole substitution *)
+      Clause.make c.concl (Vec.to_array new_guard)
+      |> Clause.apply_subst !subst
     in
     if not @@ Clause.equal c c' then (
       Log.logf 3
