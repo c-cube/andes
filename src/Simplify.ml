@@ -80,24 +80,13 @@ let simplify_ (c:Clause.t) : Clause.t option =
       )
     | Term.Eqn {sign=true; lhs; rhs} ->
       (* check that [lhs] and [rhs] are unifiable, if yes keep them.
-         otherwise, don't keep the unifier. *)
+         otherwise, keep the equation, but don't keep the unifier. *)
       Undo_stack.with_ undo (fun () ->
         try Unif.unify ~undo lhs rhs
         with Unif.Fail -> absurd t);
 
-      let try_match lhs rhs =
-        Undo_stack.with_ undo (fun () ->
-          try
-            Unif.match_ ~undo lhs rhs;
-            Log.logf 5 (fun k->k "(@[simplify.eq-match@ %a@])" Term.pp t);
-            restart();
-            true
-          with Unif.Fail -> false)
-      in
+      Vec.push new_guard t
 
-      (* simplify *)
-      if try_match lhs rhs || try_match rhs lhs then ()
-      else Vec.push new_guard t
     | Term.App {f; _} ->
       begin match Fun.kind f with
         | Fun.F_cstor -> Vec.push new_guard t
@@ -126,12 +115,15 @@ let simplify_ (c:Clause.t) : Clause.t option =
                   Term.pp t Rule.pp rule);
               Undo_stack.with_ undo (fun () ->
                 Unif.unify ~undo (Rule.concl rule) t;
-                let rule_body = Rule.body rule |> Array.map Term.deref_deep in
-                Array.iter (Vec.push to_process) rule_body;
+                (* add body of rule to the literals to process *)
+                Array.iter
+                  (fun t -> Vec.push to_process (Term.deref_deep t))
+                  (Rule.body rule);
                 restart());
               Rule.rename_in_place rule; (* consume rule's current version *)
             | exception Several_rules ->
-              (* several rules, keep *)
+                (* several rules, don't simplify.
+                   Will be dealt with in {!Andes}. *)
               Vec.push new_guard t
             | _::_::_ -> assert false
           end

@@ -180,7 +180,7 @@ end = struct
   exception Found_rule of rule_to_apply
 
   let find_rule_to_apply ~at_root (_st:t) (tree:tree) : rule_to_apply =
-    let@() = Tracing.with_ "find-rule-to-apply" in
+    let@() = Tracing.with_ "find-rule-to-apply" ~args:["at-root", `Bool at_root] in
     let c = tree.t_clause in
     if is_solution_c c then RA_solution
     else (
