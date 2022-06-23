@@ -2,7 +2,6 @@
 open Types
 open Util
 
-exception Several_rules
 exception Simp_absurd
 
 (* simplify the clause at this tree until either:
@@ -13,25 +12,35 @@ exception Simp_absurd
 *)
 let simplify_ (c:Clause.t) : Clause.t option =
   let to_process = Vec.of_array c.Clause.guard in
-  let new_guard = Vec.create () in
+  let new_guard = ref Term.Set.empty in
 
   let subst = ref Subst.empty in
 
   let pp_state out () =
     Fmt.fprintf out "(@[:to_process (@[%a@])@ :new_guard (@[%a@])@ :subst %a@])"
-      (Vec.pp Term.pp) to_process (Vec.pp Term.pp) new_guard Subst.pp !subst
+      (Vec.pp Term.pp) to_process (pp_iter Term.pp) (Term.Set.to_iter !new_guard)
+      Subst.pp !subst
   in
 
   let reprocess_if_contains v =
+    let@() = Tracing.with_ "reprocess-if-contains" in
     let tbl = Term.Tbl.create 8 in
-    Vec.filter_in_place
-      (fun t ->
-        if Term.contains_var ~tbl v t then (
-          (* [t] is modified by the binding of [v] *)
-          Vec.push to_process t;
-          false
-        ) else true)
-      new_guard;
+    new_guard :=
+      Term.Set.filter
+        (fun t ->
+          if Term.contains_var ~tbl v t then (
+            (* [t] is modified by the binding of [v] *)
+            Vec.push to_process t;
+            false
+          ) else true)
+      !new_guard;
+  in
+
+  let keep t =
+    (*
+    let t = Term.apply_subst !subst t in
+    *)
+    new_guard := Term.Set.add t !new_guard
   in
 
   let absurd (t:Term.t) : 'a =
@@ -45,15 +54,16 @@ let simplify_ (c:Clause.t) : Clause.t option =
     let@() = Tracing.with_ "restart" in
     Log.log 5 "(simplify.restart)";
     (* check if some processed terms need to be re-processed *)
-    Vec.filter_in_place
-      (fun t ->
-         let t' = Term.apply_subst !subst t in
-         if Term.equal t t' then true
-         else (
-           Vec.push to_process t';
-           false
-         ))
-      new_guard;
+    new_guard :=
+      Term.Set.filter
+        (fun t ->
+           let t' = Term.apply_subst !subst t in
+           if Term.equal t t' then true
+           else (
+             Vec.push to_process t';
+             false
+           ))
+      !new_guard;
     Log.logf 10 (fun k->k "(@[simplify.restart@ :yields %a@])" pp_state());
   in
 
@@ -67,6 +77,7 @@ let simplify_ (c:Clause.t) : Clause.t option =
     | Term.Var _ -> assert false (* not at toplevel *)
     | Term.Eqn {sign=true; lhs; rhs} ->
 
+      let@ () = Tracing.with_ "simp.eqn" in
       let lhs = Term.deref_var !subst lhs in
       let rhs = Term.deref_var !subst rhs in
 
@@ -84,7 +95,7 @@ let simplify_ (c:Clause.t) : Clause.t option =
         (* check that [lhs] and [rhs] are unifiable, if yes keep them.
            otherwise, keep the equation, but don't keep the unifier. *)
         (match Unif.unify !subst lhs rhs with
-        | _ -> Vec.push new_guard t
+        | _ -> keep t
         | exception Unif.Fail -> absurd t)
       )
 
@@ -94,8 +105,7 @@ let simplify_ (c:Clause.t) : Clause.t option =
     | Term.Eqn {sign=false; lhs; rhs} ->
 
       (match Unif.unify !subst lhs rhs with
-      | _ ->
-        Vec.push new_guard t (* keep *)
+      | _ -> keep t
       | exception Unif.Fail ->
           (* never equal, drop trivial constraint *)
         Log.logf 5 (fun k->k "(@[simplify.trivial-neq@ %a@])" Term.pp t);
@@ -103,9 +113,12 @@ let simplify_ (c:Clause.t) : Clause.t option =
 
     | Term.App {f; _} ->
       begin match Fun.kind f with
-        | Fun.F_cstor -> Vec.push new_guard t
-        | Fun.F_defined {rules=[]; _} -> Vec.push new_guard t (* not defined yet *)
+        | Fun.F_cstor -> keep t
+        | Fun.F_defined {rules=[]; _} -> keep t (* not defined yet *)
         | Fun.F_defined {rules; _} ->
+
+          let@ () = Tracing.with_ "simp.defined-app" in
+
           (* try to apply the rules, and simplify if zero or one apply *)
           begin match
               CCList.filter_map
@@ -134,9 +147,9 @@ let simplify_ (c:Clause.t) : Clause.t option =
               Rule.rename_in_place rule; (* consume rule's current version *)
 
             | _::_::_ ->
-                (* several rules, don't simplify.
-                   Will be dealt with in {!Andes}. *)
-              Vec.push new_guard t
+              (* several rules, don't simplify.
+                 Will be dealt with in {!Andes}. *)
+              keep t
           end
       end
   in
@@ -156,8 +169,15 @@ let simplify_ (c:Clause.t) : Clause.t option =
     done;
 
     let c' =
-      (* change guard, apply whole substitution *)
-      Clause.make c.concl (Vec.to_array new_guard)
+      (* change guard, apply whole substitution.
+         substitute in guard as a set so it deduplicates. *)
+      let cache = Term.Tbl.create 8 in
+      let guard =
+        !new_guard
+        |> Term.Set.map (Term.apply_subst ~cache !subst)
+        |> Term.Set.to_iter |> Iter.to_array
+      in
+      Clause.make c.concl guard
       |> Clause.apply_subst !subst
     in
     if not @@ Clause.equal c c' then (
