@@ -180,6 +180,7 @@ end = struct
   exception Found_rule of rule_to_apply
 
   let find_rule_to_apply ~at_root (_st:t) (tree:tree) : rule_to_apply =
+    let@() = Tracing.with_ "find-rule-to-apply" in
     let c = tree.t_clause in
     if is_solution_c c then RA_solution
     else (
@@ -369,7 +370,10 @@ end = struct
     let n_sols0 = n_root_sols st in
     let old_steps = st.n_steps in
     while n_root_sols st = n_sols0 && has_task st do
+
       st.n_steps <- 1 + st.n_steps;
+      Tracing.instant "step" ~args:["n", `Int st.n_steps];
+
       pp_progress st;
       let tree = next_task st in
       process_tree st tree
