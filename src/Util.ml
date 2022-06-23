@@ -17,6 +17,10 @@ let pp_iter pp_x out l =
 
 let[@inline] array_is_empty a = Array.length a = 0
 
+let time_elapsed =
+  let t = Unix.gettimeofday() in
+  fun () -> Unix.gettimeofday() -. t
+
 exception Error of string
 
 let () =

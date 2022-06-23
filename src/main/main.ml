@@ -7,10 +7,13 @@ let solve stmts : unit =
   let goal = C.stmts stmts |> C.goal in
   let config = Andes.Config.default in
   let res, steps = Andes.solve ~config goal in
+  let t = Util.time_elapsed() in
   match res with
-  | None -> Format.printf "@{<Yellow>[@<1>×]@} no solution found (%d steps).@." steps
+  | None ->
+    Format.printf "@{<Yellow>[@<1>×]@} no solution found (%d steps in %.3fs).@." steps t
   | Some sol ->
-    Format.printf "@{<Green>[@<1>✔]@} solution found (%d steps)!@ %a@." steps Andes.Solution.pp sol
+    Format.printf "@{<Green>[@<1>✔]@} solution found (%d steps in %.3fs)!@ %a@."
+    steps t Andes.Solution.pp sol
 
 let process_file (file:string) =
   Log.logf 1 (fun k->k "(@[@{<yellow>process-file@} %S@])" file);
