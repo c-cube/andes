@@ -430,7 +430,7 @@ module Rule = struct
     | _ -> Util.errorf "rule.head"
 
   let rename_in_place r : unit =
-    let@ () = Tracing.with_ "rule.rename" in
+    let@ () = Tracing.with_ "rule.rename" ~args:["body.len", `Int (Array.length r.rule_body)] in
     Renaming.with_
       (fun ren ->
          let cache = Term.Tbl.create 8 in
