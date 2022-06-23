@@ -47,8 +47,6 @@ let simplify_ (c:Clause.t) : Clause.t option =
     raise_notrace Simp_absurd
   in
 
-  let needs_restart = ref false in
-
   (* simplify given term, pushing it to [new_guard] if not simplifiable,
      or pushing new terms to simplify to [to_process].
      If term is absurd, raise Simp_absurd. *)
