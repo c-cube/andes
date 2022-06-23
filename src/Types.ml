@@ -473,37 +473,49 @@ module Unif = struct
 
   type op = O_unif | O_match
 
+  module Tbl2 = CCHashtbl.Make(struct
+    type t = Term.t * Term.t
+    let equal = CCEqual.pair Term.equal Term.equal
+    let hash = CCHash.pair Term.hash Term.hash
+  end)
+
   let occurs_check v t : bool =
     assert (v.v_binding = None);
     let rec aux t =
       let t = Term.deref t in
-      match Term.view t with
-      | Var v' -> Var.equal v v'
-      | App {args; f=_} -> Array.exists aux args
-      | Eqn {lhs; rhs; sign=_} -> aux lhs || aux rhs
+      if Term.is_ground t then false (* shortcut *)
+      else
+        match Term.view t with
+        | Var v' -> Var.equal v v'
+        | App {args; f=_} -> Array.exists aux args
+        | Eqn {lhs; rhs; sign=_} -> aux lhs || aux rhs
     in aux t
 
   let unif_ op undo a b : unit =
+    let tbl = Tbl2.create 8 in
     let rec aux a b =
       let a = Term.deref a in
       let b = Term.deref b in
-      match Term.view a, Term.view b with
-      | Var v1, Var v2 when Var.equal v1 v2 -> ()
-      | Var v, _ ->
-        if occurs_check v b then raise Fail;
-        Undo_stack.push_bind undo v b
-      | _, Var v when (match op with O_unif -> true | O_match -> false) ->
-        (* can bind var on the RHS, if we're doing full unif and not just matching *)
-        if occurs_check v a then raise Fail;
-        Undo_stack.push_bind undo v a
-      | App r1, App r2
-        when Fun.equal r1.f r2.f && Array.length r1.args = Array.length r2.args ->
-        Array.iter2 aux r1.args r2.args
-      | Eqn r1, Eqn r2 when r1.sign = r2.sign ->
-        aux r1.lhs r2.lhs;
-        aux r1.rhs r2.rhs;
-      | App _, _ | Eqn _, _
-        -> raise Fail
+      if Tbl2.mem tbl (a,b) then ()
+      else (
+        Tbl2.add tbl (a,b) (); (* unify pair [a,b] once per pair at most *)
+        match Term.view a, Term.view b with
+        | Var v1, Var v2 when Var.equal v1 v2 -> ()
+        | Var v, _ ->
+          if occurs_check v b then raise Fail;
+          Undo_stack.push_bind undo v b
+        | _, Var v when (match op with O_unif -> true | O_match -> false) ->
+          (* can bind var on the RHS, if we're doing full unif and not just matching *)
+          if occurs_check v a then raise Fail;
+          Undo_stack.push_bind undo v a
+        | App r1, App r2
+          when Fun.equal r1.f r2.f && Array.length r1.args = Array.length r2.args ->
+          Array.iter2 aux r1.args r2.args
+        | Eqn r1, Eqn r2 when r1.sign = r2.sign ->
+          aux r1.lhs r2.lhs;
+          aux r1.rhs r2.rhs;
+        | App _, _ | Eqn _, _ -> raise Fail;
+      )
     in
     aux a b
 
