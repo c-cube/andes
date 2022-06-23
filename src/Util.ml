@@ -12,6 +12,9 @@ let pp_array pp_x out a =
 let pp_list pp_x out l =
   Fmt.(list ~sep:(return "@ ") pp_x) out l
 
+let pp_iter pp_x out l =
+  Fmt.(iter ~sep:(return "@ ") pp_x) out l
+
 let[@inline] array_is_empty a = Array.length a = 0
 
 exception Error of string
