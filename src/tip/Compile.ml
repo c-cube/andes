@@ -125,8 +125,9 @@ end = struct
   let add v t m = M.add v t m
 
   let apply s (t:Term.t) : Term.t =
-    Types.Undo_stack.with_
-      (fun undo ->
+    let undo = Types.Undo_stack.create () in
+    Types.Undo_stack.with_ undo
+      (fun () ->
          M.iter (fun v t -> Types.Undo_stack.push_bind undo v t) s;
          Term.deref_deep t)
 end

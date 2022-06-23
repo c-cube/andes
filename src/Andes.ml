@@ -158,7 +158,7 @@ end = struct
          (* use [entry] iff it matches [goal] *)
          let goal_entry = entry.e_goal in
          if Array.length goal_entry = 1 then (
-           Undo_stack.with_ ~undo (fun undo ->
+           Undo_stack.with_ undo (fun () ->
              try
                Unif.match_ ~undo (Array.get goal_entry 0) goal;
                Some entry
@@ -230,8 +230,8 @@ end = struct
       (fun r ->
          Log.logf 5 (fun k->k "(@[do_resolution.step@ :rule %a@ :term %a@])" Rule.pp r Term.pp t);
          let c' =
-           Undo_stack.with_ ~undo
-             (fun undo ->
+           Undo_stack.with_ undo
+             (fun () ->
                 try
                   Unif.unify ~undo t (Rule.concl r);
                   let c' =
@@ -273,7 +273,7 @@ end = struct
         let c' =
           if Array.length sol.Clause.concl <> 1 then None
           else
-            Undo_stack.with_ ~undo (fun undo ->
+            Undo_stack.with_ undo (fun () ->
                try
                  Unif.unify ~undo defer.goal (Array.get sol.Clause.concl 0);
                  let c' =
@@ -392,7 +392,8 @@ end = struct
     let goal = s.root.e_goal in
     let vars = Term.vars_iter (CCArray.to_iter goal) in
     let map =
-      Undo_stack.with_ (fun undo ->
+      let undo = Undo_stack.create () in
+      Undo_stack.with_ undo (fun () ->
         assert (Array.length goal = Array.length (Clause.concl c));
         try
           Array.iter2 (Unif.unify ~undo) goal (Clause.concl c);

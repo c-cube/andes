@@ -12,6 +12,7 @@ exception Simp_absurd
    - or, for constraints, the conjunction of constraints is SAT
 *)
 let simplify_ (c:Clause.t) : Clause.t option =
+  (* used locally to try and unify terms *)
   let undo = Undo_stack.create() in
   let concl = ref c.Clause.concl in
   let to_process = Vec.of_array c.Clause.guard in
@@ -58,18 +59,18 @@ let simplify_ (c:Clause.t) : Clause.t option =
       (* FIXME: should we simplify even for non-vars? *)
       (* [x=t] replaces [x] with [t] everywhere, of fails by occur check.
          if binding succeeds, need to re-simplify again *)
-      Undo_stack.with_ ~undo (fun undo ->
+      Undo_stack.with_ undo (fun () ->
         match Unif.unify ~undo lhs rhs with
         | () ->
           (* drop the term, now true by unif *)
           Log.logf 5 (fun k->k "(@[simplify.eq-res@ %a@])" Term.pp t);
-          needs_restart := true
+          restart();
         | exception Unif.Fail ->
           absurd t)
     | Term.Eqn {sign=false; lhs; rhs} when Term.equal lhs rhs ->
       absurd t (* [t!=t] absurd *)
     | Term.Eqn {sign=false; lhs; rhs} ->
-      Undo_stack.with_ ~undo (fun undo ->
+      Undo_stack.with_ undo (fun () ->
         match Unif.unify ~undo lhs rhs with
         | () ->
           Vec.push new_guard t (* keep *)
@@ -79,7 +80,7 @@ let simplify_ (c:Clause.t) : Clause.t option =
       )
     | Term.Eqn {sign=true; lhs; rhs} ->
       (* check that [lhs] and [rhs] are unifiable, if yes keep them *)
-      Undo_stack.with_ ~undo (fun undo ->
+      Undo_stack.with_ undo (fun () ->
         try Unif.unify ~undo lhs rhs
         with Unif.Fail -> absurd t);
       Vec.push new_guard t
@@ -93,8 +94,8 @@ let simplify_ (c:Clause.t) : Clause.t option =
           begin match
               CCList.filter_map
                 (fun r ->
-                   Undo_stack.with_ ~undo
-                     (fun undo ->
+                   Undo_stack.with_ undo
+                     (fun () ->
                         try
                           (* keep rule if its conclusion unifies with [t] *)
                           Unif.unify ~undo (Rule.concl r) t;
@@ -109,7 +110,7 @@ let simplify_ (c:Clause.t) : Clause.t option =
               (* exactly one rule applies, so resolve with its unconditionally *)
               Log.logf 5 (fun k->k "(@[simplify.uniq-rule@ :goal %a@ :rule %a@])"
                   Term.pp t Rule.pp rule);
-              Undo_stack.with_ ~undo (fun undo ->
+              Undo_stack.with_ undo (fun () ->
                 Unif.unify ~undo (Rule.concl rule) t;
                 let rule_body = Rule.body rule |> Array.map Term.deref_deep in
                 Array.iter (Vec.push to_process) rule_body;
@@ -124,22 +125,12 @@ let simplify_ (c:Clause.t) : Clause.t option =
   in
   (* simplification fixpoint *)
   try
-    let continue = ref true in
-    while !continue do
-      (* process all in [to_process] *)
-      while not @@ Vec.is_empty to_process do
-        let t = Vec.pop_exn to_process in
-        Log.logf 5 (fun k->k "(@[simplify.process@ %a@])" Term.pp t);
-        simp_t t
-      done;
-
-      if !needs_restart then (
-        needs_restart := false;
-        restart()
-        ) else (
-          continue := false
-        )
+    while not @@ Vec.is_empty to_process do
+      let t = Vec.pop_exn to_process in
+      Log.logf 5 (fun k->k "(@[simplify.process@ %a@])" Term.pp t);
+      simp_t t
     done;
+
     let c' =
       Clause.make !concl (Vec.to_array new_guard)
     in

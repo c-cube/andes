@@ -166,10 +166,13 @@ module Undo_stack : sig
 
   val push_bind : t -> Var.t -> Term.t -> unit
 
-  val with_ : ?undo:t -> (t -> 'a) -> 'a
-  (** [with_ f] saves the current state of the undo stack,
-      calls [f undo], then restores variables to the old saved state.
-      @param undo if provided, start from this undo stack *)
+  val with_ : t -> (unit -> 'a) -> 'a
+  (** [with_ undo f] runs [f()], and unwinds any change
+      whether [f] succeeds or raises. *)
+
+  val with_protect_fail : t -> (unit -> 'a) -> 'a
+  (** [with_protect_fail undo f] runs [f()], but unwinds any change
+      if [f()] raises an exception. Otherwise the changes are preserved. *)
 end
 
 (** {2 Unification of terms} *)

@@ -266,7 +266,7 @@ module Term = struct
 
   let vars_iter ?(tbl=Tbl.create 8) (it:t Iter.t) : Var.Set.t =
     it
-    |> Iter.flat_map (subterms ~tbl ~enter:(fun t -> not (is_ground t)))
+    |> Iter.flat_map (fun t -> subterms t ~tbl ~enter:(fun t -> not (is_ground t)))
     |> vars_of_iter_
 
   let vars ?tbl t = vars_of_iter_ @@ subterms ?tbl t
@@ -275,7 +275,7 @@ module Term = struct
      Only enter subterm [t] if [enter t] is true *)
   let map_top_down_
       ?(cache=Tbl.create 8)
-      ?(enter=fun _ -> true) ~recursive ~(f:t -> t option) (t:t) : t =
+      ?(enter=fun _ -> true) ~recursive ~(f:t -> t option) (t0:t) : t =
     let rec loop t =
       match Tbl.find_opt cache t with
       | Some u -> u
@@ -299,7 +299,7 @@ module Term = struct
         Tbl.add cache t res;
         res
     in
-    loop t
+    loop t0
 
   (* follow variable bindings deeply *)
   let deref_deep ?cache t =
@@ -326,7 +326,7 @@ module Term = struct
           Some u
         | _ -> None)
 
-  let rename_arr ?(cache=Tbl.create 8) r = Array.map (rename ~cache r)
+  let rename_arr ?(cache=Tbl.create 8) r a = Array.map (rename ~cache r) a
 end
 
 module Clause = struct
@@ -377,10 +377,12 @@ module Rule = struct
     | _ -> Util.errorf "rule.head"
 
   let rename_in_place r : unit =
+    let@ () = Tracing.with_ "rule.rename" in
     Renaming.with_
       (fun ren ->
-         r.rule_concl <- Term.rename ren r.rule_concl;
-         r.rule_body <- Term.rename_arr ren r.rule_body)
+         let cache = Term.Tbl.create 8 in
+         r.rule_concl <- Term.rename ~cache ren r.rule_concl;
+         r.rule_body <- Term.rename_arr ~cache ren r.rule_body)
 
   let make concl body : t =
     begin match Term.view concl with
@@ -433,7 +435,13 @@ module Undo_stack : sig
 
   val clear : t -> unit
 
-  val with_ : ?undo:t -> (t -> 'a) -> 'a
+  val with_ : t -> (unit -> 'a) -> 'a
+  (** [with_ undo f] runs [f()], and unwinds any change
+      whether [f] succeeds or raises. *)
+
+  val with_protect_fail : t -> (unit -> 'a) -> 'a
+  (** [with_protect_fail undo f] runs [f()], but unwinds any change
+      if [f()] raises an exception. Otherwise the changes are preserved. *)
 end = struct
   type t = Var.t Vec.vector
 
@@ -457,11 +465,20 @@ end = struct
 
   let clear st = restore st 0
 
-  let[@inline] with_ ?(undo=create()) f =
+  let[@inline] with_ undo f =
     let lvl = save undo in
     try
-      let x = f undo in
+      let x = f () in
       restore undo lvl;
+      x
+    with e ->
+      restore undo lvl;
+      raise e
+
+  let[@inline] with_protect_fail undo f =
+    let lvl = save undo in
+    try
+      let x = f () in
       x
     with e ->
       restore undo lvl;
