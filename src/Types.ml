@@ -234,7 +234,7 @@ module Term = struct
   (* follow variable bindings deeply *)
   let rec deref_deep t : t = match view t with
     | Var {v_binding=Some u;_} -> deref_deep u
-    | Var _ -> t
+    | Var _ | App {args=[||]; _} -> t
     | App {f; args} ->
       let args' = Array.map deref_deep args in
       if CCArray.equal (==) args args' then t else app f args'

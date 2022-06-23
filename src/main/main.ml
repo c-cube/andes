@@ -22,7 +22,9 @@ let process_file (file:string) =
     solve stmts
 
 let main () =
+  Sys.catch_break true;
   Catapult_file.with_setup @@ fun () ->
+
   Fmt.set_color_default true;
   let files = CCVector.create () in
   let options = [

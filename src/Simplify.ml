@@ -8,22 +8,24 @@ exception Simp_absurd
 (* simplify the clause at this tree until either:
    - the clause is found to be absurd (impossible guard)
    - each term in the guard is maximally simplified and has several
-   rules that can potentially apply;
-   or, for constraints, the conjunction of constraints is SAT
+     rules that can potentially apply;
+   - or, for constraints, the conjunction of constraints is SAT
 *)
 let simplify_ (c:Clause.t) : Clause.t option =
   let undo = Undo_stack.create() in
   let concl = ref c.Clause.concl in
   let to_process = Vec.of_array c.Clause.guard in
   let new_guard = Vec.create () in
+
   let pp_state out () =
     Fmt.fprintf out "(@[:to_process (@[%a@])@ :new_guard (@[%a@])@])"
       (Vec.pp Term.pp) to_process (Vec.pp Term.pp) new_guard
   in
+
   (* after some variable has been bound, re-simplify
      terms that can be simplified *)
   let restart () : unit =
-    Tracing.instant "restart";
+    let@() = Tracing.with_ "restart" in
     Log.log 5 "(simplify.restart)";
     concl := Array.map Term.deref_deep !concl;
     Vec.iteri (fun i t -> Vec.set to_process i (Term.deref_deep t)) to_process;
@@ -38,34 +40,40 @@ let simplify_ (c:Clause.t) : Clause.t option =
       new_guard;
     Log.logf 10 (fun k->k "(@[simplify.restart@ :yields %a@])" pp_state());
   in
+
   let absurd (t:Term.t) : 'a =
     Log.logf 5 (fun k->k "(@[simplify.is_absurd@ %a@])" Term.pp t);
     raise_notrace Simp_absurd
   in
+
+  let needs_restart = ref false in
+
   (* simplify given term, pushing it to [new_guard] if not simplifiable,
      or pushing new terms to simplify to [to_process].
      If term is absurd, raise Simp_absurd. *)
-  let simp_t (t:Term.t) : unit = match Term.view t with
+  let simp_t (t:Term.t) : unit =
+    match Term.view t with
     | Term.Var _ -> assert false (* not at toplevel *)
     | Term.Eqn {sign=true; lhs; rhs} when Term.is_var lhs || Term.is_var rhs ->
       (* FIXME: should we simplify even for non-vars? *)
       (* [x=t] replaces [x] with [t] everywhere, of fails by occur check.
          if binding succeeds, need to re-simplify again *)
       Undo_stack.with_ ~undo (fun undo ->
-        try
-          Unif.unify ~undo lhs rhs;
+        match Unif.unify ~undo lhs rhs with
+        | () ->
+          (* drop the term, now true by unif *)
           Log.logf 5 (fun k->k "(@[simplify.eq-res@ %a@])" Term.pp t);
-          restart();
-        with Unif.Fail ->
+          needs_restart := true
+        | exception Unif.Fail ->
           absurd t)
     | Term.Eqn {sign=false; lhs; rhs} when Term.equal lhs rhs ->
       absurd t (* [t!=t] absurd *)
     | Term.Eqn {sign=false; lhs; rhs} ->
       Undo_stack.with_ ~undo (fun undo ->
-        try
-          Unif.unify ~undo lhs rhs;
+        match Unif.unify ~undo lhs rhs with
+        | () ->
           Vec.push new_guard t (* keep *)
-        with Unif.Fail ->
+        | exception Unif.Fail ->
           (* never equal, drop *)
           Log.logf 5 (fun k->k "(@[simplify.trivial-neq@ %a@])" Term.pp t);
       )
@@ -116,10 +124,21 @@ let simplify_ (c:Clause.t) : Clause.t option =
   in
   (* simplification fixpoint *)
   try
-    while not @@ Vec.is_empty to_process do
-      let t = Vec.pop_exn to_process in
-      Log.logf 5 (fun k->k "(@[simplify.process@ %a@])" Term.pp t);
-      simp_t t
+    let continue = ref true in
+    while !continue do
+      (* process all in [to_process] *)
+      while not @@ Vec.is_empty to_process do
+        let t = Vec.pop_exn to_process in
+        Log.logf 5 (fun k->k "(@[simplify.process@ %a@])" Term.pp t);
+        simp_t t
+      done;
+
+      if !needs_restart then (
+        needs_restart := false;
+        restart()
+        ) else (
+          continue := false
+        )
     done;
     let c' =
       Clause.make !concl (Vec.to_array new_guard)
@@ -134,7 +153,7 @@ let simplify_ (c:Clause.t) : Clause.t option =
     None
 
 let simplify_c c : _ option =
-  let@ () = Tracing.with_ "simplify" in
+  let@ () = Tracing.with_ "simplify-c" in
   Util.Status.print "simplify clause";
   simplify_ c
 

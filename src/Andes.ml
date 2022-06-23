@@ -80,9 +80,6 @@ end = struct
     e_listeners: tree Vec.vector;
   }
 
-  (* if true, can be dropped from listeners *)
-  let[@inline] tree_is_dead (t:tree) = t.t_kind = Tree_dead
-
   let pp_tree out (t:tree) =
     let pp_label out = function
       | L_none -> Fmt.string out ":no-label"
