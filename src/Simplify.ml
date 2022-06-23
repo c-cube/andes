@@ -79,11 +79,25 @@ let simplify_ (c:Clause.t) : Clause.t option =
           Log.logf 5 (fun k->k "(@[simplify.trivial-neq@ %a@])" Term.pp t);
       )
     | Term.Eqn {sign=true; lhs; rhs} ->
-      (* check that [lhs] and [rhs] are unifiable, if yes keep them *)
+      (* check that [lhs] and [rhs] are unifiable, if yes keep them.
+         otherwise, don't keep the unifier. *)
       Undo_stack.with_ undo (fun () ->
         try Unif.unify ~undo lhs rhs
         with Unif.Fail -> absurd t);
-      Vec.push new_guard t
+
+      let try_match lhs rhs =
+        Undo_stack.with_ undo (fun () ->
+          try
+            Unif.match_ ~undo lhs rhs;
+            Log.logf 5 (fun k->k "(@[simplify.eq-match@ %a@])" Term.pp t);
+            restart();
+            true
+          with Unif.Fail -> false)
+      in
+
+      (* simplify *)
+      if try_match lhs rhs || try_match rhs lhs then ()
+      else Vec.push new_guard t
     | Term.App {f; _} ->
       begin match Fun.kind f with
         | Fun.F_cstor -> Vec.push new_guard t
