@@ -1,4 +1,6 @@
 
+open Util
+
 module Var : sig
   type t
 
@@ -98,10 +100,6 @@ module Term : sig
 
   val is_var : t -> bool
 
-  val deref_deep : ?cache:t Tbl.t -> t -> t
-  (** [deref_deep t] rebuilds a new term where variables are replaced by their
-      current binding *)
-
   val rename : ?cache:t Tbl.t -> Renaming.t -> t -> t
   val rename_arr : ?cache:t Tbl.t -> Renaming.t -> t array -> t array
 end
@@ -154,37 +152,27 @@ module Rule : sig
   val pp : t CCFormat.printer
 end
 
-(** {2 Stack to undo changes to terms} *)
-module Undo_stack : sig
+(** Substitutions *)
+module Subst : sig
   type t
-
-  val create : unit -> t
-  (** Make a new stack *)
-
-  val clear : t -> unit
-  (** clear for re-using *)
-
-  val push_bind : t -> Var.t -> Term.t -> unit
-
-  val with_ : t -> (unit -> 'a) -> 'a
-  (** [with_ undo f] runs [f()], and unwinds any change
-      whether [f] succeeds or raises. *)
-
-  val with_protect_fail : t -> (unit -> 'a) -> 'a
-  (** [with_protect_fail undo f] runs [f()], but unwinds any change
-      if [f()] raises an exception. Otherwise the changes are preserved. *)
+  val empty : t
+  val add : t -> Var.t -> Term.t -> t
+  val mem : t -> Var.t -> bool
+  val get : t -> Var.t -> Term.t option
+  val to_iter : t -> (Var.t * Term.t) Iter.t
+  val pp : t Fmt.printer
 end
 
 (** {2 Unification of terms} *)
 module Unif : sig
   exception Fail
 
-  val unify : undo:Undo_stack.t -> Term.t -> Term.t -> unit
+  val unify : Subst.t -> Term.t -> Term.t -> Subst.t
   (** [unify t1 t2] returns [()] in case of success (binding variables
       in [t1] and [t2] to make them equal).
       @raise Fail if the terms could not be unified *)
 
-  val match_ : undo:Undo_stack.t -> Term.t -> Term.t -> unit
+  val match_ : Subst.t -> Term.t -> Term.t -> Subst.t
   (** [match_ t1 t2] returns [()] in case of success (binding variables
       in [t1] to make them equal).
       @raise Fail if the terms could not be unified *)

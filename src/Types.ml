@@ -108,6 +108,7 @@ module Fun = struct
   let to_string f = ID.to_string f.f_id
 end
 
+(* used to quickly rename variables in a term/clause *)
 module Renaming = struct
   type t = (Var.t * term option) Vec.vector (* restore binding + unmark *)
 
@@ -424,65 +425,19 @@ module Rule = struct
     | _ -> assert false
 end
 
-module Undo_stack : sig
-  type t
+module Subst = struct
+  module M = Var.Map
+  type t = Term.t M.t
 
-  val push_bind : t -> Var.t -> term -> unit
-  (** [push_bind undo v t] bindings [v] to [t] and remembers to undo
-      this binding in [undo] *)
-
-  val create : unit -> t
-
-  val clear : t -> unit
-
-  val with_ : t -> (unit -> 'a) -> 'a
-  (** [with_ undo f] runs [f()], and unwinds any change
-      whether [f] succeeds or raises. *)
-
-  val with_protect_fail : t -> (unit -> 'a) -> 'a
-  (** [with_protect_fail undo f] runs [f()], but unwinds any change
-      if [f()] raises an exception. Otherwise the changes are preserved. *)
-end = struct
-  type t = Var.t Vec.vector
-
-  type level = int
-
-  let create () : t = Vec.create ()
-
-  let[@inline] save (st:t) : level = Vec.size st
-
-  let[@inline] push_bind (st:t) (v:var) (t:term) : unit =
-    Vec.push st v;
-    assert (v.v_binding = None);
-    v.v_binding <- Some t;
-    ()
-
-  let restore st lvl : unit =
-    while Vec.size st > lvl do
-      let v = Vec.pop_exn st in
-      v.v_binding <- None;
-    done
-
-  let clear st = restore st 0
-
-  let[@inline] with_ undo f =
-    let lvl = save undo in
-    try
-      let x = f () in
-      restore undo lvl;
-      x
-    with e ->
-      restore undo lvl;
-      raise e
-
-  let[@inline] with_protect_fail undo f =
-    let lvl = save undo in
-    try
-      let x = f () in
-      x
-    with e ->
-      restore undo lvl;
-      raise e
+  let empty = M.empty
+  let add self v t = M.add v t self
+  let get self v = M.find_opt v self
+  let mem self v = M.mem v self
+  let to_iter = M.to_iter
+  let pp out (self:t) =
+    let pp_pair out (v,t) = Fmt.fprintf out "@ (@[%a %a@])" Var.pp v Term.pp t in
+    Fmt.fprintf out "(@[subst%a@])"
+    (pp_iter pp_pair) (to_iter self)
 end
 
 module Unif = struct
@@ -496,35 +451,51 @@ module Unif = struct
     let hash = CCHash.pair Term.hash Term.hash
   end)
 
-  let occurs_check v t : bool =
+  (* shallow deref *)
+  let deref subst (t:term) : term =
+    let rec aux t =
+      if Term.is_ground t then t (* shortcut *)
+      else
+        match Term.view t with
+        | Var v ->
+            begin match Subst.get subst v with
+            | None -> t
+            | Some u -> aux u
+            end
+        | App _ | Eqn _ -> t
+    in aux t
+
+  let occurs_check subst v t : bool =
     assert (v.v_binding = None);
     let rec aux t =
-      let t = Term.deref t in
+      let t = deref subst t in
       if Term.is_ground t then false (* shortcut *)
       else
         match Term.view t with
-        | Var v' -> Var.equal v v'
+        | Var v' ->
+          Var.equal v v'
         | App {args; f=_} -> Array.exists aux args
         | Eqn {lhs; rhs; sign=_} -> aux lhs || aux rhs
     in aux t
 
-  let unif_ op undo a b : unit =
+  let unif_ op subst a b : Subst.t =
     let tbl = Tbl2.create 8 in
+    let subst = ref subst in
     let rec aux a b =
-      let a = Term.deref a in
-      let b = Term.deref b in
+      let a = deref !subst a in
+      let b = deref !subst b in
       if Tbl2.mem tbl (a,b) then ()
       else (
         Tbl2.add tbl (a,b) (); (* unify pair [a,b] once per pair at most *)
         match Term.view a, Term.view b with
         | Var v1, Var v2 when Var.equal v1 v2 -> ()
         | Var v, _ ->
-          if occurs_check v b then raise Fail;
-          Undo_stack.push_bind undo v b
+          if occurs_check !subst v b then raise Fail;
+          subst := Subst.add !subst v b
         | _, Var v when (match op with O_unif -> true | O_match -> false) ->
           (* can bind var on the RHS, if we're doing full unif and not just matching *)
-          if occurs_check v a then raise Fail;
-          Undo_stack.push_bind undo v a
+          if occurs_check !subst v a then raise Fail;
+          subst := Subst.add !subst v a
         | App r1, App r2
           when Fun.equal r1.f r2.f && Array.length r1.args = Array.length r2.args ->
           Array.iter2 aux r1.args r2.args
@@ -534,9 +505,10 @@ module Unif = struct
         | App _, _ | Eqn _, _ -> raise Fail;
       )
     in
-    aux a b
+    aux a b;
+    !subst
 
-  let unify ~undo a b = unif_ O_unif undo a b
-  let match_ ~undo a b = unif_ O_match undo a b
+  let unify s a b = unif_ O_unif s a b
+  let match_ s a b = unif_ O_match s a b
 end
 
