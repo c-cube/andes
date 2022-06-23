@@ -11,6 +11,7 @@ type var = {
 
 and term = {
   t_view: term_view;
+  mutable t_ground: bool;
   mutable t_id: int;
 }
 
@@ -149,7 +150,16 @@ module Term = struct
 
   let[@inline] hash (t:t) : int = CCHash.int t.t_id
 
-  module Tbl = CCHashtbl.Make(struct type t = term let hash = hash let equal = equal end)
+  let[@inline] is_ground t = t.t_ground
+
+  module As_key = struct
+    type t = term
+    let hash = hash
+    let equal = equal
+    let compare = compare
+  end
+  module Tbl = CCHashtbl.Make(As_key)
+  module Set = CCSet.Make(As_key)
 
   module H = Hashcons.Make(struct
     type t = term
@@ -189,10 +199,19 @@ module Term = struct
   let tbl_ = H.create()
 
   (* term builder *)
-  let[@inline] mk_ : view -> t =
+  let mk_ : view -> t =
     fun (t_view:view) : t ->
-      let t = {t_view; t_id= -1} in
+      let t = {t_view; t_id= -1; t_ground=true} in
       let u = H.hashcons tbl_ t in
+      if t == u then (
+        (* new term, compute cached properties *)
+        let ground = match t_view with
+          | Var _ -> false
+          | App {f=_; args} -> Array.for_all is_ground args
+          | Eqn {lhs; rhs; sign=_} -> is_ground lhs && is_ground rhs
+        in
+        u.t_ground <- ground;
+      );
       u
 
   let[@inline] var v : t = mk_ @@ Var v
@@ -221,22 +240,24 @@ module Term = struct
     | Var {v_binding=Some u;_} -> deref u
     | _ -> t
 
-  let subterms ?(tbl=Tbl.create 8) t yield : unit =
+  let subterms ?(tbl=Tbl.create 8) ?(enter=fun _ -> true) t yield : unit =
     let rec aux t =
       let t = deref t in
       if not (Tbl.mem tbl t) then (
         Tbl.add tbl t ();
         yield t;
-        match view t with
-        | Var _ -> ()
-        | App {args;_} -> Array.iter aux args
-        | Eqn {lhs;rhs;_} -> aux lhs; aux rhs
+        if enter t then (
+          match view t with
+          | Var _ -> ()
+          | App {args;_} -> Array.iter aux args
+          | Eqn {lhs;rhs;_} -> aux lhs; aux rhs
+        )
       )
     in
     aux t
 
-  let vars_of_iter_ seq =
-    seq
+  let vars_of_iter_ it =
+    it
     |> Iter.filter_map
       (fun t -> match view t with
          | Var v -> Some v
@@ -245,12 +266,16 @@ module Term = struct
 
   let vars_iter ?(tbl=Tbl.create 8) (it:t Iter.t) : Var.Set.t =
     it
-    |> Iter.flat_map (subterms ~tbl)
+    |> Iter.flat_map (subterms ~tbl ~enter:(fun t -> not (is_ground t)))
     |> vars_of_iter_
 
   let vars ?tbl t = vars_of_iter_ @@ subterms ?tbl t
 
-  let map_bottom_up ?(cache=Tbl.create 8) ~recursive ~(f:t -> t option) (t:t) : t =
+  (* map superterms, then subterms.
+     Only enter subterm [t] if [enter t] is true *)
+  let map_top_down_
+      ?(cache=Tbl.create 8)
+      ?(enter=fun _ -> true) ~recursive ~(f:t -> t option) (t:t) : t =
     let rec loop t =
       match Tbl.find_opt cache t with
       | Some u -> u
@@ -262,6 +287,7 @@ module Term = struct
           | None ->
             match view t with
             | Var _ | App {args=[||]; _} -> t
+            | _ when not (enter t) -> t
             | App {f; args} ->
               let args' = Array.map loop args in
               if CCArray.equal (==) args args' then t else app f args'
@@ -276,14 +302,16 @@ module Term = struct
     loop t
 
   (* follow variable bindings deeply *)
-  let deref_deep ?cache =
-    map_bottom_up ?cache ~recursive:true
-      ~f:(fun t -> match view t with
+  let deref_deep ?cache t =
+    map_top_down_ ?cache ~recursive:true t
+     ~enter:(fun t -> not (is_ground t))
+     ~f:(fun t -> match view t with
         | Var {v_binding=Some u;_} -> Some u
         | _ -> None)
 
-  let rename ?cache (ren:Renaming.t) : term -> term =
-    map_bottom_up ?cache ~recursive:false
+  let rename ?cache (ren:Renaming.t) (t: term) : term =
+    map_top_down_ ?cache ~recursive:false t
+      ~enter:(fun t -> not (is_ground t))
       ~f:(fun t ->
         match view t with
         | Var ({v_binding=Some u; _} as v) when Var.marked v ->

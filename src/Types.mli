@@ -81,6 +81,7 @@ module Term : sig
   val pp : t CCFormat.printer
 
   module Tbl : CCHashtbl.S with type key = t
+  module Set : CCSet.S with type elt = t
 
   val var : Var.t -> t
   val app : Fun.t -> t array -> t
@@ -90,7 +91,8 @@ module Term : sig
   val neq : t -> t -> t
   val eqn : sign:bool -> t -> t -> t
 
-  val subterms : ?tbl:unit Tbl.t -> t -> t Iter.t
+  val is_ground : t -> bool
+  val subterms : ?tbl:unit Tbl.t -> ?enter:(t->bool) -> t -> t Iter.t
   val vars_iter : ?tbl:unit Tbl.t -> t Iter.t -> Var.Set.t
   val vars : ?tbl:unit Tbl.t -> t -> Var.Set.t
 
