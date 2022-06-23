@@ -80,6 +80,8 @@ module Term : sig
   val hash : t -> int
   val pp : t CCFormat.printer
 
+  module Tbl : CCHashtbl.S with type key = t
+
   val var : Var.t -> t
   val app : Fun.t -> t array -> t
   val app_l : Fun.t -> t list -> t
@@ -88,18 +90,18 @@ module Term : sig
   val neq : t -> t -> t
   val eqn : sign:bool -> t -> t -> t
 
-  val subterms : t -> t Iter.t
-  val vars_iter : t Iter.t -> Var.Set.t
-  val vars : t -> Var.Set.t
+  val subterms : ?tbl:unit Tbl.t -> t -> t Iter.t
+  val vars_iter : ?tbl:unit Tbl.t -> t Iter.t -> Var.Set.t
+  val vars : ?tbl:unit Tbl.t -> t -> Var.Set.t
 
   val is_var : t -> bool
 
-  val deref_deep : t -> t
+  val deref_deep : ?cache:t Tbl.t -> t -> t
   (** [deref_deep t] rebuilds a new term where variables are replaced by their
       current binding *)
 
-  val rename : Renaming.t -> t -> t
-  val rename_arr : Renaming.t -> t array -> t array
+  val rename : ?cache:t Tbl.t -> Renaming.t -> t -> t
+  val rename_arr : ?cache:t Tbl.t -> Renaming.t -> t array -> t array
 end
 
 (** {2 Generalized Clause} *)
@@ -112,8 +114,8 @@ module Clause : sig
   val concl : t -> Term.t array
   val guard : t -> Term.t array
 
-  val deref_deep : t -> t
-  val rename : t -> t
+  val deref_deep : ?cache:Term.t Term.Tbl.t -> t -> t
+  val rename : ?cache:Term.t Term.Tbl.t -> t -> t
 
   val equal : t -> t -> bool
   val make : Term.t array -> Term.t array -> t

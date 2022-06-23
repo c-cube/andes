@@ -9,7 +9,10 @@ type var = {
   mutable v_marked: bool; (* temporary *)
 }
 
-and term = term_view
+and term = {
+  t_view: term_view;
+  mutable t_id: int;
+}
 
 and fun_ = {
   f_id: ID.t;
@@ -138,36 +141,40 @@ module Term = struct
         rhs: t;
       }
 
-  let[@inline] view t = t
+  let[@inline] view (t:t) = t.t_view
 
-  let rec compare a b : int =
-    let open CCOrd.Infix in
-    let[@inline] to_int = function
-      | Var _ -> 0
-      | App _ -> 1
-      | Eqn _ -> 2
-    in
-    match view a, view b with
-    | _ when a==b -> 0 (* physically equal *)
-    | Var a, Var b -> Var.compare a b
-    | App a, App b ->
-      let c = Fun.compare a.f b.f in
-      if c<>0 then c else CCArray.compare compare a.args b.args
-    | Eqn a, Eqn b ->
-      compare a.lhs b.lhs
-      <?> (compare, a.rhs, b.rhs)
-      <?> (CCOrd.bool, a.sign, b.sign)
-    | Var _, _ | App _, _ | Eqn _, _ -> CCOrd.int (to_int @@ view a) (to_int @@ view b)
+  let[@inline] equal (a:t) (b:t) : bool = a == b
 
-  let[@inline] equal a b = a==b || compare a b = 0
+  let[@inline] compare (a:t) (b:t) : int = CCInt.compare a.t_id b.t_id
 
-  let rec hash a : int =
-    match view a with
-    | Var v -> CCHash.combine2 10 (Var.hash v)
-    | App {f; args} ->
-      CCHash.combine3 20 (Fun.hash f) (CCHash.iter hash @@ CCArray.to_iter args)
-    | Eqn { sign; lhs; rhs } ->
-      CCHash.combine4 30 (CCHash.bool sign) (hash lhs) (hash rhs)
+  let[@inline] hash (t:t) : int = CCHash.int t.t_id
+
+  module Tbl = CCHashtbl.Make(struct type t = term let hash = hash let equal = equal end)
+
+  module H = Hashcons.Make(struct
+    type t = term
+
+    let set_id t id =
+      assert (t.t_id = -1);
+      t.t_id <- id
+
+    let equal t1 t2 = match t1.t_view, t2.t_view with
+    | Var v1, Var v2 -> Var.equal v1 v2
+    | App a1, App a2 -> Fun.equal a1.f a2.f && CCArray.equal equal a1.args a2.args
+    | Eqn e1, Eqn e2 ->
+        e1.sign = e2.sign &&
+        equal e1.lhs e2.lhs &&
+        equal e1.rhs e2.rhs
+    | (Var _ | App _ | Eqn _), _ -> false
+
+    let hash a : int =
+      match view a with
+      | Var v -> CCHash.combine2 10 (Var.hash v)
+      | App {f; args} ->
+        CCHash.combine3 20 (Fun.hash f) (CCHash.iter hash @@ CCArray.to_iter args)
+      | Eqn { sign; lhs; rhs } ->
+        CCHash.combine4 30 (CCHash.bool sign) (hash lhs) (hash rhs)
+  end)
 
   let rec pp out a : unit =
     match view a with
@@ -179,11 +186,16 @@ module Term = struct
       Format.fprintf out "(@[<hv>%s@ %a@ %a@])"
         (if sign then "=" else "!=") pp lhs pp rhs
 
-  (* term builder *)
-  let mk_ : view -> t =
-    fun[@inline] t_view -> t_view
+  let tbl_ = H.create()
 
-  let var v : t = mk_ @@ Var v
+  (* term builder *)
+  let[@inline] mk_ : view -> t =
+    fun (t_view:view) : t ->
+      let t = {t_view; t_id= -1} in
+      let u = H.hashcons tbl_ t in
+      u
+
+  let[@inline] var v : t = mk_ @@ Var v
 
   let app f args : t =
     if Fun.arity f <> Array.length args then (
@@ -194,7 +206,11 @@ module Term = struct
 
   let app_l f args : t = app f (Array.of_list args)
   let const f : t = app f [||]
-  let eqn ~sign lhs rhs = mk_ @@ Eqn {lhs; rhs; sign}
+  let eqn ~sign lhs rhs =
+    (* normalize *)
+    let lhs, rhs = if compare lhs rhs <= 0 then lhs, rhs else rhs, lhs in
+    mk_ @@ Eqn {lhs; rhs; sign}
+
   let eq a b : t = eqn ~sign:true a b
   let neq a b : t = eqn ~sign:false a b
 
@@ -205,18 +221,21 @@ module Term = struct
     | Var {v_binding=Some u;_} -> deref u
     | _ -> t
 
-  let subterms t yield : unit =
+  let subterms ?(tbl=Tbl.create 8) t yield : unit =
     let rec aux t =
       let t = deref t in
-      yield t;
-      match view t with
-      | Var _ -> ()
-      | App {args;_} -> Array.iter aux args
-      | Eqn {lhs;rhs;_} -> aux lhs; aux rhs
+      if not (Tbl.mem tbl t) then (
+        Tbl.add tbl t ();
+        yield t;
+        match view t with
+        | Var _ -> ()
+        | App {args;_} -> Array.iter aux args
+        | Eqn {lhs;rhs;_} -> aux lhs; aux rhs
+      )
     in
     aux t
 
-  let vars_of_seq_ seq =
+  let vars_of_iter_ seq =
     seq
     |> Iter.filter_map
       (fun t -> match view t with
@@ -224,47 +243,62 @@ module Term = struct
          | _ -> None)
     |> Var.Set.of_iter
 
-  let vars_iter (it:t Iter.t) : Var.Set.t =
+  let vars_iter ?(tbl=Tbl.create 8) (it:t Iter.t) : Var.Set.t =
     it
-    |> Iter.flat_map subterms
-    |> vars_of_seq_
+    |> Iter.flat_map (subterms ~tbl)
+    |> vars_of_iter_
 
-  let vars t = vars_of_seq_ @@ subterms t
+  let vars ?tbl t = vars_of_iter_ @@ subterms ?tbl t
+
+  let map_bottom_up ?(cache=Tbl.create 8) ~recursive ~(f:t -> t option) (t:t) : t =
+    let rec loop t =
+      match Tbl.find_opt cache t with
+      | Some u -> u
+      | None ->
+        let res =
+          match f t with
+          | Some u when recursive -> loop u
+          | Some u -> u
+          | None ->
+            match view t with
+            | Var _ | App {args=[||]; _} -> t
+            | App {f; args} ->
+              let args' = Array.map loop args in
+              if CCArray.equal (==) args args' then t else app f args'
+            | Eqn {sign;lhs;rhs} ->
+              let lhs' = loop lhs in
+              let rhs' = loop rhs in
+              if lhs==lhs' && rhs==rhs' then t else eqn ~sign lhs' rhs'
+        in
+        Tbl.add cache t res;
+        res
+    in
+    loop t
 
   (* follow variable bindings deeply *)
-  let rec deref_deep t : t = match view t with
-    | Var {v_binding=Some u;_} -> deref_deep u
-    | Var _ | App {args=[||]; _} -> t
-    | App {f; args} ->
-      let args' = Array.map deref_deep args in
-      if CCArray.equal (==) args args' then t else app f args'
-    | Eqn {sign;lhs;rhs} ->
-      let lhs' = deref_deep lhs in
-      let rhs' = deref_deep rhs in
-      if lhs==lhs' && rhs==rhs' then t else eqn ~sign lhs' rhs'
+  let deref_deep ?cache =
+    map_bottom_up ?cache ~recursive:true
+      ~f:(fun t -> match view t with
+        | Var {v_binding=Some u;_} -> Some u
+        | _ -> None)
 
-  let rename (ren:Renaming.t) (t:t) : term =
-    let rec aux t = match view t with
-      | Var ({v_binding=Some u; _} as v) when Var.marked v -> u (* follow renaming *)
-      | Var v ->
-        (* [v] is not bound, rename it to [v'] *)
-        let v' = Var.copy v in
-        Var.mark v;
-        Vec.push ren (v, v.v_binding);
-        let u = var v' in
-        v.v_binding <- Some u;
-        u
-      | App {f; args} ->
-        let args' = Array.map aux args in
-        if CCArray.equal (==) args args' then t else app f args'
-      | Eqn {sign; lhs; rhs} ->
-        let lhs' = aux lhs in
-        let rhs' = aux rhs in
-        if lhs==lhs' && rhs==rhs' then t
-        else eqn ~sign lhs' rhs'
-    in aux t
+  let rename ?cache (ren:Renaming.t) : term -> term =
+    map_bottom_up ?cache ~recursive:false
+      ~f:(fun t ->
+        match view t with
+        | Var ({v_binding=Some u; _} as v) when Var.marked v ->
+          Some u (* follow renaming *)
+        | Var v ->
+          (* [v] is not bound, rename it to [v'] *)
+          let v' = Var.copy v in
+          Var.mark v;
+          Vec.push ren (v, v.v_binding);
+          let u = var v' in
+          v.v_binding <- Some u;
+          Some u
+        | _ -> None)
 
-  let rename_arr r = Array.map (rename r)
+  let rename_arr ?(cache=Tbl.create 8) r = Array.map (rename ~cache r)
 end
 
 module Clause = struct
@@ -281,10 +315,10 @@ module Clause = struct
      guard=Array.map f c.guard;
     }
 
-  let rename c =
-    Renaming.with_ (fun ren -> map (Term.rename ren) c)
+  let rename ?(cache=Term.Tbl.create 8) c =
+    Renaming.with_ (fun ren -> map (Term.rename ~cache ren) c)
 
-  let deref_deep c = map Term.deref_deep c
+  let deref_deep ?cache c = map (Term.deref_deep ?cache) c
 
   let[@inline] equal a b : bool =
     CCArray.equal Term.equal a.concl b.concl &&
